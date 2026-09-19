@@ -521,7 +521,7 @@ plates). `max-num-batched-tokens` is how many orders the prep station can lay
 out at once. `max-num-seqs` is how many tables you will seat. All three have to
 be balanced against the same fixed 80 GB of counter space.
 
-### Component 5: KEDA, the Autoscaler
+### Component 5: KEDA, the Autoscaler 
 
 **Where:** `k8s/aks/apps/keda-scaler.yml`
 **Job:** turn expensive machines on when needed and off when not
