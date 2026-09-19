@@ -5,18 +5,17 @@ The architecture uses **asymmetric hardware**: cheap **T4** nodes for
 orchestration and layout extraction, premium **A100** nodes for the heavy VLM
 generation. Read this fully before spending money.
 
-> 📸 For a click-by-click walkthrough with screenshots of every portal step
-> below, see the companion Substack article,
-> [_Week 0 — Cloud Setup_](https://theneuralmaze.substack.com/p/the-slm-ocr-course-week-0-bonus-cloud).
+> For a beginner walkthrough of every portal step below, with the current
+> portal navigation, see section 7 of [`next-steps.md`](../next-steps.md).
 
 ---
 
 ## 1. Target SKUs
 
-| Role                          | SKU                        | GPU                 | vCPUs/VM |
+| Role | SKU | GPU | vCPUs/VM |
 |-------------------------------|----------------------------|---------------------|----------|
-| Layout workers + orchestrator | `Standard_NC16as_T4_v3`    | 1× NVIDIA T4        | 16       |
-| VLM inference                 | `Standard_NC24ads_A100_v4` | 1× NVIDIA A100 80GB | 24       |
+| Layout workers + orchestrator | `Standard_NC16as_T4_v3` | 1× NVIDIA T4 | 16 |
+| VLM inference | `Standard_NC24ads_A100_v4` | 1× NVIDIA A100 80GB | 24 |
 
 The T4 workers run at 16 vCPU (not NC4/NC8) so the orchestrator has enough CPU
 to slice each document and dispatch many crops to the A100 without becoming the
@@ -30,12 +29,12 @@ not GPU count. That's why the quota rows are named `... Family vCPUs`: each one
 is *"the total vCPUs you may run across that VM family."* So you don't request
 "4 GPUs"; you request the vCPUs that 4 of those VMs add up to.
 
-| Quota family                        | Request | Why                                       |
+| Quota family | Request | Why |
 |-------------------------------------|---------|-------------------------------------------|
-| `Standard NCASv3_T4 Family vCPUs`   | 64      | 4 × NC16as_T4_v3 (16 vCPU) → 4 T4 GPUs    |
-| `Standard NCADS_A100_v4 Family vCPUs` | 96    | 4 × NC24ads_A100_v4 (24 vCPU) → 4 A100 GPUs |
+| `Standard NCASv3_T4 Family vCPUs` | 64 | 4 × NC16as_T4_v3 (16 vCPU) → 4 T4 GPUs |
+| `Standard NCADS_A100_v4 Family vCPUs` | 96 | 4 × NC24ads_A100_v4 (24 vCPU) → 4 A100 GPUs |
 
-> ⚠️ **Don't confuse *family* with *GPU model*.** Several families have "A100"
+> **Don't confuse *family* with *GPU model*.** Several families have "A100"
 > in the name. You want the **NC** family (`NCADS_A100_v4`, cost-optimized
 > inference), **not** the `ND...A100` families (`NDAMSv4_A100`, `NDASv4_A100`),
 > which are the ND series for distributed multi-GPU training and aren't needed
@@ -69,7 +68,7 @@ sudo dnf install -y azure-cli
 **Log in and select your subscription**
 ```bash
 az version
-az login                              # opens a browser; use --use-device-code if headless
+az login # opens a browser; use --use-device-code if headless
 az account list --output table
 az account set --subscription "<YOUR_SUBSCRIPTION_ID>"
 ```
@@ -97,7 +96,7 @@ Before any GPU quota is even visible, your subscription must have the
 2. In the left menu, scroll down to **Settings → Resource providers**.
 3. In the **Filter by name** box type `Microsoft.Compute`, select the
    **Microsoft.Compute** row, and click **Register** (top bar). Wait until its
-   status flips from *NotRegistered* to *Registered* (1–2 min).
+   status flips from *NotRegistered* to *Registered* (1 to 2 minutes).
 
    CLI equivalent:
    ```bash
@@ -106,7 +105,7 @@ Before any GPU quota is even visible, your subscription must have the
 
 ### 4.2 Upgrade to Pay-As-You-Go (leave the free trial)
 
-The free trial caps GPU quota at 0. Upgrade to unlock quota requests — you keep
+The free trial caps GPU quota at 0. Upgrade to unlock quota requests. You keep
 any remaining credit.
 
 1. From the portal **Home**, look for the credit banner at the top:
@@ -123,7 +122,7 @@ any remaining credit.
 ### 4.3 Open your subscription's Usage + quotas
 
 1. Search **Subscriptions** in the top bar and open it.
-2. Click your subscription (here it's renamed **Azure SLM OCR Course**).
+2. Click your subscription.
 3. In the left menu open **Settings → Usage + quotas**.
 
 ### 4.4 Request the T4 quota
@@ -142,14 +141,14 @@ Repeat 4.4 for the A100:
 1. Clear the search and type `NCADS_A100_v4`.
 2. Select **Standard NCADS_A100_v4 Family vCPUs** → **New limit = 96** → submit.
 
-> ⚠️ Pick `NCADS_A100_v4` (the **NC** family), **not** the `ND...A100` families —
+> Pick `NCADS_A100_v4` (the **NC** family), **not** the `ND...A100` families.
 > those are the ND series for distributed multi-GPU training, which you don't
 > need here.
 
 ### 4.6 If it says "unable to adjust your quota"
 
 GPU quota is almost never auto-approved. You'll usually be told to **submit a
-support ticket** — this is normal, not an error. Click through to the ticket and
+support ticket**. This is normal, not an error. Click through to the ticket and
 paste a short justification:
 
 > Deploying an event-driven OCR / VLM inference pipeline on AKS. NVIDIA T4
@@ -157,7 +156,7 @@ paste a short justification:
 > for inference, each pool autoscaling with scale-to-zero. Region: France
 > Central. Requesting 64 vCPU for NCASv3_T4 and 96 vCPU for NCADS_A100_v4.
 
-Request the two families as **separate tickets** — T4 usually clears in hours;
+Request the two families as **separate tickets**. T4 usually clears in hours;
 A100 can take hours to a couple of days.
 
 ---
@@ -188,15 +187,15 @@ az vm list-usage --location francecentral \
 ```
 
 > **Quota ≠ capacity.** An empty `Restr` means the SKU is *offered* to your
-> subscription — it does not read live inventory. For T4 it's nearly always
+> subscription. It does not read live inventory. For T4 it's nearly always
 > safe; for the scarce A100 it's a strong hint, not a promise.
 
 ---
 
 ## 6. Smoke test: deploy one GPU VM, confirm it boots, then delete it
 
-The only sure test is to deploy a single node. **A100 bills by the second —
-delete it the moment the test passes.**
+The only sure test is to deploy a single node. **A100 bills by the second.
+Delete it the moment the test passes.**
 
 ```bash
 LOC=francecentral
@@ -223,25 +222,25 @@ az vm get-instance-view \
 
 # DELETE EVERYTHING
 az group delete --name $RG --yes --no-wait
-az group exists --name $RG        # should eventually print: false
+az group exists --name $RG # should eventually print: false
 ```
 
 - `VM running` → capacity is real; proceed.
 - `AllocationFailed` / `SkuNotAvailable` / `ZonalAllocationFailed` → no free
   GPU right now; try a fallback region. Not your fault.
 
-The deploy takes ~2–5 min with capacity; capacity errors usually fail in 1–2 min.
+The deploy takes about 2 to 5 minutes with capacity; capacity errors usually fail in 1 to 2 minutes.
 A quota error (`QuotaExceeded`) fails instantly and means the quota isn't
-approved yet — different problem from capacity.
+approved yet, which is a different problem from capacity.
 
 ---
 
-## 7. Capacity-proof cluster (disposable — not the real deployment)
+## 7. Capacity-proof cluster (disposable, not the real deployment)
 
 The VM smoke test in Section 6 proves the *SKU* boots. This step proves one
 level up: that **AKS itself** can actually schedule pods onto both GPU types
 via the cluster autoscaler and taints, before you invest time in the full
-build. This cluster is throwaway — **delete it at the end of this section.**
+build. This cluster is throwaway. **Delete it at the end of this section.**
 The real, production cluster (ACR, model ingestion, Redis, the API gateway,
 KEDA, the works) is built fresh in
 [`aks_deployment.md`](aks_deployment.md) and does not reuse anything created
@@ -301,7 +300,7 @@ Target each workload to its pool with a `nodeSelector` (`workload: layout` /
 > idle GPUs cost nothing.
 
 Once you've confirmed `kubectl get nodes` shows both pools scheduling GPU pods
-correctly, **tear the whole thing down** — this cluster has done its job:
+correctly, **tear the whole thing down**. This cluster has done its job:
 
 ```bash
 az group delete --name $RG --yes --no-wait
@@ -314,12 +313,12 @@ az group delete --name $RG --yes --no-wait
 - Set a **Budget + alerts**: *Cost Management + Billing → Budgets* → 50/80/100 %.
 - Keep **scale-to-zero** on both pools.
 - For interruptible batch OCR, consider **Azure Spot** node pools (add
-  `--priority Spot --eviction-policy Delete`) — 70–82 % cheaper, but reclaimed
+  `--priority Spot --eviction-policy Delete`). These are 70 to 82 percent cheaper, but reclaimed
   with <30 s notice, so only for checkpoint-safe work.
 
 ---
 
-## ✅ Next step
+## Next step
 
 Quota is approved, capacity is confirmed, and the disposable smoke-test
 cluster from Section 7 is torn down. Head to

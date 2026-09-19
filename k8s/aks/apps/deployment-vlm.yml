@@ -23,7 +23,7 @@ spec:
           effect: "NoSchedule"
       containers:
         - name: ocr-vlm-server
-          image: acrocrinference.azurecr.io/ocr-vlm-qwen:latest
+          image: ocr-vlm-qwen  # registry set in kustomization.yml
           imagePullPolicy: Always
           securityContext:
             capabilities:

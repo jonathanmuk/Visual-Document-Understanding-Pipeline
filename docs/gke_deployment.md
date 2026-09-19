@@ -1,11 +1,11 @@
-## 🛠️ Deployment Lifecycle (Google Kubernetes Engine - GKE)
+## Deployment Lifecycle (Google Kubernetes Engine - GKE)
 
 > **Before you start:** this guide assumes you already have a GCP account with
 > a fully activated (non-trial) billing account and approved GPU quota. If you
 > haven't done that yet, go through [`gcp_onboarding.md`](gcp_onboarding.md)
 > and [`gcp_gpu_prereqs.md`](gcp_gpu_prereqs.md) first. Note that the
 > capacity-proof cluster built in Section 7 of `gcp_gpu_prereqs.md` is
-> disposable and unrelated to the cluster built below — delete it if you
+> disposable and unrelated to the cluster built below. Delete it if you
 > haven't already, this guide creates its own from scratch.
 
 ### 0. Prerequisites & Environment Variables
@@ -20,7 +20,7 @@ export AR_LOCATION="us-central1"
 export AR_REGISTRY="${AR_LOCATION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO_NAME}"
 ```
 
-### 🔑 Authenticate Google Cloud CLI Session
+### Authenticate Google Cloud CLI Session
 
 Before proceeding, ensure your Google Cloud CLI (`gcloud`) session is authenticated and set to your target project.
 
@@ -100,11 +100,11 @@ gcloud container node-pools create apinp \
   --node-labels=app=api-gateway
 ```
 
-#### 🛡️ GPU Lifecycle on GKE: Native Managed Drivers
+#### GPU Lifecycle on GKE: Native Managed Drivers
 
 Unlike unmanaged setups, **GKE automatically installs and manages NVIDIA GPU drivers** when you pass `gpu-driver-version=default` during node pool creation. GKE provisions the necessary daemonsets (`nvidia-gpu-device-plugin`) natively, eliminating the need to install or maintain a separate Helm GPU Operator.
 
-#### 🔍 Verify GPU Schedulability
+#### Verify GPU Schedulability
 To verify that GKE has initialized the GPU drivers and reported `nvidia.com/gpu` capacity to Kubernetes:
 
 ```bash
@@ -120,7 +120,7 @@ kubectl get nodes -L cloud.google.com/gke-nodepool
 
 ---
 
-### 📦 2. Model Ingestion: Datacenter‑to‑Datacenter
+### 2. Model Ingestion: Datacenter-to-Datacenter
 
 Models are treated as **heavy binary data**. Ingest them directly inside the cluster using a Kubernetes **Job** backed by a **Google Cloud Filestore PVC** (`standard-rwx`).
 
@@ -138,8 +138,8 @@ kubectl get pvc model-weights-pvc
 
 **Expected Output:**
 ```text
-NAME                STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
-model-weights-pvc   Bound    pvc-8192a3b1-12c4-4ef5-98de-f7fe61b13adb   1Ti        RWX            standard-rwx   35s
+NAME STATUS VOLUME CAPACITY ACCESS MODES STORAGECLASS AGE
+model-weights-pvc Bound pvc-8192a3b1-12c4-4ef5-98de-f7fe61b13adb 1Ti RWX standard-rwx 35s
 ```
 
 #### 2.2 Launch the Ingestion Job
@@ -160,7 +160,7 @@ Follow the download logs directly from Hugging Face:
 kubectl logs -f job/model-weight-ingest
 ```
 
-*(Once you see `✅ Ingestion complete`, clean up the job with `kubectl delete job model-weight-ingest`)*
+*(Once you see ` Ingestion complete`, clean up the job with `kubectl delete job model-weight-ingest`)*
 
 #### 2.4 Debugging & Manual Inspection (Optional)
 
@@ -194,7 +194,7 @@ kubectl run weights-debug \
 
 ---
 
-### 📦 3. Build & Push Container Images
+### 3. Build & Push Container Images
 
 Build the container images locally or using Google Cloud Build, then push them to Artifact Registry:
 
@@ -207,11 +207,11 @@ docker build -t ${AR_REGISTRY}/ocr-vlm-qwen:latest ./server
 docker push ${AR_REGISTRY}/ocr-vlm-qwen:latest
 
 # 2. Build and push Rust Producer API Gateway
-docker build -t ${AR_REGISTRY}/ocr-api-rust:latest ./client_rt_producer
+docker build -t ${AR_REGISTRY}/ocr-api-rust:latest ./realtime_producer
 docker push ${AR_REGISTRY}/ocr-api-rust:latest
 
 # 3. Build and push Python Consumer Worker
-docker build -t ${AR_REGISTRY}/ocr-worker-rt:latest ./client_rt_consumer
+docker build -t ${AR_REGISTRY}/ocr-worker-rt:latest ./realtime_consumer
 docker push ${AR_REGISTRY}/ocr-worker-rt:latest
 ```
 
@@ -260,7 +260,7 @@ kubectl logs -l app=ocr-vlm --tail=100 -f
 
 Exposing raw Kubernetes services directly to the public internet creates security risks and uncontrolled autoscaling costs. In GCP, we establish a **Zero-Trust Network Perimeter** using GKE Internal Load Balancing alongside **Google Cloud API Gateway** or **GCP Cloud Armor**.
 
-#### 🔒 Security Architecture Overview
+#### Security Architecture Overview
 
 ```mermaid
 graph TD

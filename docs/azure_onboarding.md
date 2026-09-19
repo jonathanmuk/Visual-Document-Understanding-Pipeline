@@ -1,15 +1,15 @@
 # Setting Up Your Azure Account
 
-This is the very first step of the course: creating an Azure account and getting
+This is the very first step: creating an Azure account and getting
 the CLI installed. Azure is our primary cloud for the SLM-OCR pipeline. Once
 this is done, move on to `azure_gpu_prereqs.md` to get GPU access and build the
 cluster.
 
-> This guide covers account creation only. It's all done in the browser — there
+> This guide covers account creation only. It's all done in the browser. There
 > are no commands until the CLI install at the end.
 
-> 📸 For screenshots of every portal step below, see the companion Substack
-> article, [_Week 0 — Cloud Setup_](https://theneuralmaze.substack.com/p/the-slm-ocr-course-week-0-bonus-cloud).
+> For a beginner walkthrough of every portal step below, with the current
+> portal navigation, see section 7 of [`next-steps.md`](../next-steps.md).
 
 ---
 
@@ -23,12 +23,12 @@ cluster.
 4. Fill in your profile and phone number for identity verification.
 5. Add a **credit or debit card** for verification.
    > **This does not charge you.** Azure uses it only to confirm you're a real
-   > person. Prepaid/virtual cards are usually rejected — use a normal card.
+   > person. Prepaid/virtual cards are usually rejected, so use a normal card.
 6. Accept the agreement and finish. You now have the free account with **$200
    in credit** and a set of always-free services.
 
 > **What you get:** ~$200 credit valid for 30 days, plus 12 months of selected
-> free services. This is enough to explore, **but not to run GPUs** — see the
+> free services. This is enough to explore, **but not to run GPUs**. See the
 > warning below.
 
 ---
@@ -37,7 +37,7 @@ cluster.
 
 **The free trial cannot run GPUs.** This is the single most important thing to
 understand up front. Free/Trial subscriptions are **capped at 0 GPU quota** and
-the increase button is disabled. To use the A100/T4 nodes this course needs,
+the increase button is disabled. To use the A100/T4 nodes this system needs,
 you'll have to upgrade to **Pay-As-You-Go** first (you keep any remaining
 credit). That whole process is covered in `azure_gpu_prereqs.md`.
 
@@ -91,7 +91,7 @@ sudo dnf install -y azure-cli
 **Verify and log in**
 ```bash
 az version
-az login                              # opens a browser; use --use-device-code if headless
+az login # opens a browser; use --use-device-code if headless
 az account list --output table
 az account set --subscription "<YOUR_SUBSCRIPTION_ID>"
 ```
@@ -103,9 +103,9 @@ az aks install-cli
 
 ---
 
-## ✅ Next step
+## Next step
 
 Your account exists and the CLI works. Now head to **`azure_gpu_prereqs.md`** to
 upgrade to Pay-As-You-Go, request GPU quota, verify availability, and confirm
-capacity — then move on to **`aks_deployment.md`** to build the AKS cluster.
+capacity. Then move on to **`aks_deployment.md`** to build the AKS cluster.
 </content>

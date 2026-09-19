@@ -2,7 +2,7 @@
 set -e
 
 ###############################################################################
-# 📝 CONFIGURATION: vLLM for Qwen 3.5
+# CONFIGURATION: vLLM for Qwen 3.5
 ###############################################################################
 
 # --- Configuration & Defaults ---
@@ -10,7 +10,7 @@ set -e
 : "${SERVED_NAME:=${MODEL_ID:-Qwen/Qwen3.5-4B}}"
 : "${GPU_MEMORY:=0.9}"
 : "${MAX_NUM_BATCHED_TOKENS:=262144}"
-: "${MAX_NUM_SEQS:=256}"
+: "${MAX_NUM_SEQS:=512}"
 : "${MAX_MODEL_LEN:=16384}"
 
 if [ -d "/mnt/models" ]; then
@@ -27,10 +27,13 @@ MODEL_PATH="${MODEL_ROOT}/${SERVED_NAME}"
 export PYTHONUNBUFFERED=1
 
 ###############################################################################
-# 🚀 Launch vLLM Server
+# Launch vLLM Server
 ###############################################################################
-echo "🚀 Starting $SERVED_NAME with vLLM..."
+echo "Starting $SERVED_NAME with vLLM..."
 
+# --mm-encoder-tp-mode only takes effect when --tensor-parallel-size is above 1.
+# This deployment runs one GPU per pod, so the flag is inert today. It is kept so
+# that raising tensor parallelism later does not also require remembering it.
 exec vllm serve "$MODEL_PATH" \
   --served-model-name "$SERVED_NAME" \
   --port "$PORT" \

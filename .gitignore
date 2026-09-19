@@ -180,5 +180,4 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-# macOS
-.DS_Store
+realtime_consumer/config.local.yaml

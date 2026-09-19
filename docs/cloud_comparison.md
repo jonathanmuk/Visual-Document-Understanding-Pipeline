@@ -1,30 +1,30 @@
-# ☁️ Cloud Provider Architecture Comparison: AKS vs. GKE
+# Cloud Provider Architecture Comparison: AKS vs. GKE
 
 This document provides an architecture and operational comparison between the **Azure Kubernetes Service (AKS)** and **Google Kubernetes Engine (GKE)** implementations for this SLM-Powered OCR repository.
 
 ---
 
-## 🎯 Architectural Overview: Shared Foundation
+## Architectural Overview: Shared Foundation
 
 Both cloud deployments share an identical core application stack and metric-driven scaling philosophy:
 
 * **Ingest Gateway**: High-concurrency Rust Producer API (`ocr-api-rust`) running on CPU-optimized nodes (`apinp`).
 * **State Store**: High-memory Redis instance (`ocr-redis`) acting as a temporary document store and task queue.
 * **Layout Engine**: Asynchronous Python Consumer Worker (`ocr-worker-rt`) running layout analysis (**PP-DocLayoutV3**) on T4 GPUs (`gpunpt4`) with dynamic collector batching.
-* **SLM Inference Engine**: **vLLM** serving **Qwen 3.5 (4B)** on A100 80GB GPUs (`gpunpa100`) with Multi-Token Prediction (MTP) and continuous batching.
+* **SLM Inference Engine**: **vLLM** serving **Qwen 3.5 (4B)** on A100 80GB GPUs (`gpunpa100`) with continuous batching.
 * **Autoscaling Mechanics**: **KEDA** scaled objects monitoring Redis list length (`ocr_tasks`) and Prometheus metrics (`vllm:num_requests_waiting`).
 * **Zero-Copy Handoff**: Document buffers rasterized directly into `/dev/shm` Linux shared memory.
 
 ---
 
-## 📊 Technical Discrepancies Matrix
+## Technical Discrepancies Matrix
 
 The following table summarizes the provider-specific infrastructure configurations and manifest differences:
 
 | Architectural Component | Azure Kubernetes Service (AKS) | Google Kubernetes Engine (GKE) | Technical Rationale & Impact |
 | :--- | :--- | :--- | :--- |
 | **CLI & Auth** | `az cli` / `az login` | `gcloud sdk` / `gcloud auth login` | Cloud-native CLI commands for cluster management and credential fetching. |
-| **Container Registry** | **Azure Container Registry (ACR)**<br>`acrocrinference.azurecr.io` | **Google Artifact Registry (AR)**<br>`us-central1-docker.pkg.dev/...` | Regional image repository host per cloud ecosystem. |
+| **Container Registry** | **Azure Container Registry (ACR)**<br>`<YOUR_ACR_NAME>.azurecr.io` | **Google Artifact Registry (AR)**<br>`us-central1-docker.pkg.dev/...` | Regional image repository host per cloud ecosystem. |
 | **GPU Driver Lifecycle** | Helm-installed **NVIDIA GPU Operator** (`k8s/aks/infra/gpu-operator-values.yaml`) | **Natively Managed GPU Drivers** (`gpu-driver-version=default` node pool flag) | GKE compiles drivers and manages device plugin daemonsets natively, removing manual Helm operator overhead. |
 | **A100 GPU Machine Type** | `Standard_NC24ads_A100_v4` (24 vCPU, 220GB RAM, 1x A100 80GB) | `a2-ultragpu-1g` (12 vCPU, 170GB RAM, 1x A100 80GB) | Specialized compute instances tailored for 80GB VRAM requirements. |
 | **T4 GPU Machine Type** | `Standard_NC16as_T4_v3` (16 vCPU, 64GB RAM, 1x T4 16GB) | `n1-standard-4` + `--accelerator type=nvidia-tesla-t4,count=1` | Modular accelerator attachment on GKE vs fixed GPU SKU on AKS. |
@@ -36,7 +36,7 @@ The following table summarizes the provider-specific infrastructure configuratio
 
 ---
 
-## 🔍 Deep-Dive Audit: Verification of GKE Implementation
+## Deep-Dive Audit: Verification of GKE Implementation
 
 ### 1. Storage Provisioning (`pvc.yaml`)
 * **AKS (`k8s/aks/infra/provisioning/pvc.yaml`)**:
@@ -79,44 +79,44 @@ The following table summarizes the provider-specific infrastructure configuratio
 
 ---
 
-## 📁 Repository Manifest Mapping
+## Repository Manifest Mapping
 
 ```text
 k8s/
-├── aks/                         # Azure-Specific Manifest Overlays
-│   ├── apps/
-│   │   ├── deployment-api.yml   # AKS image tags & agentpool nodeSelectors
-│   │   ├── deployment-vlm.yml   # AKS image tags & A100 agentpool nodeSelectors
-│   │   ├── keda-scaler.yml      # KEDA autoscaling rules
-│   │   └── redis-deployment.yml # Redis state store deployment
-│   ├── infra/
-│   │   ├── gpu-operator-values.yaml # NVIDIA GPU Operator tolerations for AKS
-│   │   └── provisioning/
-│   │       ├── ingest-job.yaml  # Model downloader job
-│   │       └── pvc.yaml         # azureblob-fuse-premium PVC (300Gi)
-│   ├── networking/
-│   │   ├── apim-policy.xml      # Azure APIM JWT & rate-limit policies
-│   │   └── service.yml          # Azure Internal Load Balancer service
-│   └── kustomization.yml        # AKS Kustomize entrypoint
+├── aks/ # Azure-Specific Manifest Overlays
+│ ├── apps/
+│ │ ├── deployment-api.yml # AKS image tags & agentpool nodeSelectors
+│ │ ├── deployment-vlm.yml # AKS image tags & A100 agentpool nodeSelectors
+│ │ ├── keda-scaler.yml # KEDA autoscaling rules
+│ │ └── redis-deployment.yml # Redis state store deployment
+│ ├── infra/
+│ │ ├── gpu-operator-values.yaml # NVIDIA GPU Operator tolerations for AKS
+│ │ └── provisioning/
+│ │ ├── ingest-job.yaml # Model downloader job
+│ │ └── pvc.yaml # azureblob-fuse-premium PVC (300Gi)
+│ ├── networking/
+│ │ ├── apim-policy.xml # Azure APIM JWT & rate-limit policies
+│ │ └── service.yml # Azure Internal Load Balancer service
+│ └── kustomization.yml # AKS Kustomize entrypoint
 │
-└── gke/                         # GCP-Specific Manifest Overlays
+└── gke/ # GCP-Specific Manifest Overlays
     ├── apps/
-    │   ├── deployment-api.yml   # Artifact Registry tags & gke-nodepool selectors
-    │   ├── deployment-vlm.yml   # Artifact Registry tags & gke-nodepool selectors
-    │   ├── keda-scaler.yml      # KEDA autoscaling rules
-    │   └── redis-deployment.yml # Redis state store deployment
+    │ ├── deployment-api.yml # Artifact Registry tags & gke-nodepool selectors
+    │ ├── deployment-vlm.yml # Artifact Registry tags & gke-nodepool selectors
+    │ ├── keda-scaler.yml # KEDA autoscaling rules
+    │ └── redis-deployment.yml # Redis state store deployment
     ├── infra/
-    │   └── provisioning/
-    │       ├── ingest-job.yaml  # Model downloader job
-    │       └── pvc.yaml         # standard-rwx Filestore PVC (1Ti)
+    │ └── provisioning/
+    │ ├── ingest-job.yaml # Model downloader job
+    │ └── pvc.yaml # standard-rwx Filestore PVC (1Ti)
     ├── networking/
-    │   └── service.yml          # GKE Internal Load Balancer service
-    └── kustomization.yml        # GKE Kustomize entrypoint
+    │ └── service.yml # GKE Internal Load Balancer service
+    └── kustomization.yml # GKE Kustomize entrypoint
 ```
 
 ---
 
-## 📚 Deployment Guides Reference
+## Deployment Guides Reference
 
-* 📘 [Azure Kubernetes Service (AKS) Deployment Lifecycle](file:///Users/hedrergudene/Documents/GitHub/aks-ocr-rt-dpl/docs/aks_deployment.md)
-* 📗 [Google Kubernetes Engine (GKE) Deployment Lifecycle](file:///Users/hedrergudene/Documents/GitHub/aks-ocr-rt-dpl/docs/gke_deployment.md)
+* [Azure Kubernetes Service (AKS) Deployment Lifecycle](aks_deployment.md)
+* [Google Kubernetes Engine (GKE) Deployment Lifecycle](gke_deployment.md)

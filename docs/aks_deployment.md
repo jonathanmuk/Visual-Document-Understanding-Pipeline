@@ -1,11 +1,11 @@
-## 🛠️ Deployment Lifecycle
+## Deployment Lifecycle
 
 > **Before you start:** this guide assumes you already have an Azure account
 > with Pay-As-You-Go billing and approved GPU quota. If you haven't done that
 > yet, go through [`azure_onboarding.md`](azure_onboarding.md) and
 > [`azure_gpu_prereqs.md`](azure_gpu_prereqs.md) first. Note that the
 > capacity-proof cluster built in Section 7 of `azure_gpu_prereqs.md` is
-> disposable and unrelated to the cluster built below — delete it if you
+> disposable and unrelated to the cluster built below. Delete it if you
 > haven't already, this guide creates its own from scratch.
 
 ### 0. Prerequisites & Environment Variables
@@ -16,10 +16,10 @@ export LOCATION="eastus2"
 export RESOURCE_GROUP="XXXXXX"
 export SUBSCRIPTION_ID="XXXXXX"
 export AKS_NAME="aks-ocr-cluster"
-export ACR_NAME="acrocrinference"
+export ACR_NAME="XXXXXX" # globally unique, lowercase letters and digits only
 ```
 
-### 🔑 Authenticate Azure CLI Session
+### Authenticate Azure CLI Session
 
 Before proceeding, ensure your Azure CLI session is authenticated and set to the correct subscription. This step is required for all subsequent resource creation commands.
 
@@ -51,7 +51,7 @@ az aks create \
   --enable-blob-driver \
   --generate-ssh-keys
 
-# 4. Downlaod AKS credentials
+# 4. Download AKS credentials
 az aks get-credentials \
   --resource-group $RESOURCE_GROUP \
   --name $AKS_NAME
@@ -111,7 +111,7 @@ az aks nodepool add \
   --labels app=api-gateway
 ```
 
-#### 🛡️ GPU Lifecycle: Operator, PSA & Taint-Tolerations
+#### GPU Lifecycle: Operator, PSA & Taint-Tolerations
 
 Modern AKS clusters (v1.25+) enforce **Pod Security Admission (PSA)**. Because the GPU Operator must load kernel modules and access `/dev/` directly, it requires the `privileged` security profile. Additionally, since our GPU nodes are tainted with `sku=gpu:NoSchedule`, we must tell the Operator to tolerate that taint.
 
@@ -140,7 +140,7 @@ kubectl -n gpu-operator rollout status ds/nvidia-device-plugin-daemonset
 kubectl -n gpu-operator rollout status ds/gpu-feature-discovery
 ```
 
-#### 🔍 Verify GPU Schedulability
+#### Verify GPU Schedulability
 To ensure the GPU Operator has correctly labeled the nodes and the `nvidia.com/gpu` resource is available for your pods, run the following commands:
 
 ```bash
@@ -166,15 +166,15 @@ kubectl describe nodes | Select-String "Taints" -Context 0,2
 
 > **Pro Tip:** If `GPU_ALLOCATABLE` shows `0` or `<none>`, the GPU Operator components (Drivers/Device Plugin) have failed to schedule on those nodes. Re-check the tolerations in `k8s/infra/gpu-operator-values.yaml` and ensure the `gpu-operator` namespace has the `privileged` PSA label.
 
-### 📦 2. Model Ingestion: Datacenter‑to‑Datacenter
+### 2. Model Ingestion: Datacenter-to-Datacenter
 
-At EMDI, we treat models as **heavy data**, not as code. Instead of downloading ~100GB locally only to re-upload it later, we perform an **in-cluster ingestion** using a Kubernetes **Job**.
+We treat models as **heavy data**, not as code. Instead of downloading ~100GB locally only to re-upload it later, we perform an **in-cluster ingestion** using a Kubernetes **Job**.
 
 This Job downloads the weights directly from Hugging Face to a persistent volume (PVC) backed by Azure Blob. Once completed, the models are available for all inference pods without repeated downloads.
 
 #### 2.1 Provision Storage (PVC)
 
-The model weights are stored in a **Blob CSI‑backed PVC**. This must exist and be bound before launching the Job.
+The model weights are stored in a **Blob CSI-backed PVC**. This must exist and be bound before launching the Job.
 
 ```bash
 # 1. Apply the PVC
@@ -186,8 +186,8 @@ kubectl get pvc model-weights-pvc
 
 **Expected Output:**
 ```text
-NAME                STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS             AGE
-model-weights-pvc   Bound    pvc-37837be3-65b2-4cf0-b6ce-f7fe61b13adb   300Gi      RWX            azureblob-fuse-premium   29s
+NAME STATUS VOLUME CAPACITY ACCESS MODES STORAGECLASS AGE
+model-weights-pvc Bound pvc-37837be3-65b2-4cf0-b6ce-f7fe61b13adb 300Gi RWX azureblob-fuse-premium 29s
 ```
 
 #### 2.2 Launch the Ingestion Job
@@ -211,7 +211,7 @@ Do not use manual Pod names; use the Job abstraction to follow the download logs
 kubectl logs -f job/model-weight-ingest
 ```
 
-*(Once you see the message `✅ Ingestion complete`, you can clean up the job with `kubectl delete job model-weight-ingest`)*
+*(Once you see the message ` Ingestion complete`, you can clean up the job with `kubectl delete job model-weight-ingest`)*
 
 
 #### 2.4 Debugging & Manual Inspection (Optional)
@@ -253,41 +253,48 @@ ls -lhR
 exit
 ```
 
-The expected output will be something like this:
+The listing should show exactly the two models the ingest job downloads (file names taken from each model's Hugging Face repository; sizes and dates will differ):
 
 ```bash
 root@weights-debug:/mnt/models# ls -lhR
 .:
 total 0
-drwxrwxrwx 2 root root 4.0K May 22 22:10 Qwen
+drwxrwxrwx 2 root root 4.0K PaddlePaddle
+drwxrwxrwx 2 root root 4.0K Qwen
+
+./PaddlePaddle:
+total 0
+drwxrwxrwx 2 root root 4.0K PP-DocLayoutV3_safetensors
+
+./PaddlePaddle/PP-DocLayoutV3_safetensors:
+total 0
+-rwxrwxrwx 1 root root  ... .gitattributes
+-rwxrwxrwx 1 root root  ... README.md
+-rwxrwxrwx 1 root root  ... config.json
+-rwxrwxrwx 1 root root  ... inference.yml
+-rwxrwxrwx 1 root root  ... model.safetensors
+-rwxrwxrwx 1 root root  ... preprocessor_config.json
 
 ./Qwen:
 total 0
-drwxrwxrwx 2 root root 4.0K May 22 22:10 Qwen3-VL-Embedding-2B
-drwxrwxrwx 2 root root 4.0K May 22 22:11 Qwen3.5-4B
-
-./Qwen/Qwen3-VL-Embedding-2B:
-total 0
--rwxrwxrwx 1 root root 4.0G May 22 22:11 model.safetensors
--rwxrwxrwx 1 root root 1.6K May 22 22:10 config.json
--rwxrwxrwx 1 root root  11M May 22 22:11 tokenizer.json
--rwxrwxrwx 1 root root 5.3K May 22 22:11 tokenizer_config.json
+drwxrwxrwx 2 root root 4.0K Qwen3.5-4B
 
 ./Qwen/Qwen3.5-4B:
 total 0
--rwxrwxrwx 1 root root  12K May 22 22:11 LICENSE
--rwxrwxrwx 1 root root  76K May 22 22:11 README.md
--rwxrwxrwx 1 root root 7.6K May 22 22:11 chat_template.jinja
--rwxrwxrwx 1 root root 3.1K May 22 22:11 config.json
--rwxrwxrwx 1 root root 3.2M May 22 22:11 merges.txt
--rwxrwxrwx 1 root root 5.0G May 22 22:11 model.safetensors-00001-of-00002.safetensors
--rwxrwxrwx 1 root root 3.8G May 22 22:12 model.safetensors-00002-of-00002.safetensors
--rwxrwxrwx 1 root root  75K May 22 22:12 model.safetensors.index.json
--rwxrwxrwx 1 root root  390 May 22 22:12 preprocessor_config.json
--rwxrwxrwx 1 root root  13M May 22 22:12 tokenizer.json
--rwxrwxrwx 1 root root  17K May 22 22:12 tokenizer_config.json
--rwxrwxrwx 1 root root  385 May 22 22:12 video_preprocessor_config.json
--rwxrwxrwx 1 root root 6.5M May 22 22:12 vocab.json
+-rwxrwxrwx 1 root root  ... .gitattributes
+-rwxrwxrwx 1 root root  ... LICENSE
+-rwxrwxrwx 1 root root  ... README.md
+-rwxrwxrwx 1 root root  ... chat_template.jinja
+-rwxrwxrwx 1 root root  ... config.json
+-rwxrwxrwx 1 root root  ... merges.txt
+-rwxrwxrwx 1 root root  ... model.safetensors-00001-of-00002.safetensors
+-rwxrwxrwx 1 root root  ... model.safetensors-00002-of-00002.safetensors
+-rwxrwxrwx 1 root root  ... model.safetensors.index.json
+-rwxrwxrwx 1 root root  ... preprocessor_config.json
+-rwxrwxrwx 1 root root  ... tokenizer.json
+-rwxrwxrwx 1 root root  ... tokenizer_config.json
+-rwxrwxrwx 1 root root  ... video_preprocessor_config.json
+-rwxrwxrwx 1 root root  ... vocab.json
 ```
 
 ### 3. Build & Push
@@ -300,9 +307,9 @@ az acr build --registry $ACR_NAME --image ocr-vlm-qwen:latest ./server
 
 # 2. Real-Time Architecture (Enterprise Agentic Flow)
 # Build the high-performance Rust Producer (API Gateway)
-az acr build --registry $ACR_NAME --image ocr-api-rust:latest ./client_rt_producer
+az acr build --registry $ACR_NAME --image ocr-api-rust:latest ./realtime_producer
 # Build the GPU-ready Python Consumer (Layout Engine)
-az acr build --registry $ACR_NAME --image ocr-worker-rt:latest ./client_rt_consumer
+az acr build --registry $ACR_NAME --image ocr-worker-rt:latest ./realtime_consumer
 ```
 
 ### 4. Deploy the Full Stack
@@ -358,7 +365,7 @@ kubectl exec -it -n monitoring prometheus-prometheus-0 -- \
 
 For enterprise-grade deployments, exposing the service via a public IP is not recommended. Instead, we use **Azure API Management (APIM)** in **Internal VNet mode** to provide a secure, governed, and rate-limited entry point.
 
-#### 🛡️ Architecture & Security: Why APIM + VNet Isolation?
+#### Architecture & Security: Why APIM + VNet Isolation?
 
 By default, exposing Kubernetes services to the public internet using Public IP LoadBalancers introduces security vulnerabilities (DDoS, brute-force requests, unauthorized model consumption) and financial risk (runaway node scaling via KEDA). To build a zero-trust network perimeter around the OCR pipeline, we employ a multi-layered security design:
 
@@ -521,12 +528,12 @@ az apim subscription show \
 
 This deployment supports a **Hybrid Security Model**:
 
-*   **Zero-Trust JWT**: Validates internal identities via Microsoft Entra ID. Use the `Authorization: Bearer <token>` header.
-*   **API Key (Subscription)**: Provides access for external partners or simplified CLI use. Use the `Ocp-Apim-Subscription-Key: <key>` header.
+* **Zero-Trust JWT**: Validates internal identities via Microsoft Entra ID. Use the `Authorization: Bearer <token>` header.
+* **API Key (Subscription)**: Provides access for external partners or simplified CLI use. Use the `Ocp-Apim-Subscription-Key: <key>` header.
 
 **Governance Features:**
-*   **Indirect GPU Protection**: Throttling occurs at the gateway. This prevents high-volume bursts from triggering expensive KEDA scale-out events on the A100/T4 nodes.
-*   **Tiered Access**: By creating different **APIM Products**, you can assign different rate limits to different users (e.g., "Gold" partners get 500 calls/min, "Free" users get 10).
+* **Indirect GPU Protection**: Throttling occurs at the gateway. This prevents high-volume bursts from triggering expensive KEDA scale-out events on the A100/T4 nodes.
+* **Tiered Access**: By creating different **APIM Products**, you can assign different rate limits to different users (e.g., "Gold" partners get 500 calls/min, "Free" users get 10).
 
 **Example Request with API Key:**
 ```bash
@@ -568,9 +575,9 @@ az aks nodepool update \
 
 ---
 
-## 🔍 Monitoring & Resources
-*   [PaddleOCR-VL 1.5 Pipeline Docs](https://www.paddleocr.ai/main/en/version3.x/pipeline_usage/PaddleOCR-VL.html)
-*   [vLLM Inference Engine](https://docs.vllm.ai/)
-*   [KEDA Azure Queue Scaler](https://keda.sh/docs/scalers/azure-queue/)
-*   [HuggingFace: PaddleOCR-VL 1.5](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5)
-*   [Azure AKS Shared GPU Guide](https://learn.microsoft.com/en-us/azure/aks/gpu-cluster)
+## Monitoring & Resources
+* [PaddleOCR-VL 1.5 Pipeline Docs](https://www.paddleocr.ai/main/en/version3.x/pipeline_usage/PaddleOCR-VL.html)
+* [vLLM Inference Engine](https://docs.vllm.ai/)
+* [KEDA Azure Queue Scaler](https://keda.sh/docs/scalers/azure-queue/)
+* [HuggingFace: PaddleOCR-VL 1.5](https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.5)
+* [Azure AKS Shared GPU Guide](https://learn.microsoft.com/en-us/azure/aks/gpu-cluster)

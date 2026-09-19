@@ -3,6 +3,7 @@ kind: Kustomization
 
 resources:
   - apps/deployment-api.yml
+  - apps/deployment-worker.yml
   - apps/deployment-vlm.yml
   - apps/redis-deployment.yml
   - apps/keda-scaler.yml
@@ -12,8 +13,21 @@ resources:
 labels:
   - includeSelectors: true
     pairs:
-      managed-by: gemini-cli-agent
-      system: gke-ocr-glmocr
+      managed-by: kustomize
+      system: visual-understanding-system
+
+# Container registry. Change this one block to point at your own registry.
+# The manifests use bare image names; Kustomize rewrites them at build time.
+images:
+  - name: ocr-api-rust
+    newName: us-central1-docker.pkg.dev/<YOUR_PROJECT_ID>/ocr-repository/ocr-api-rust
+    newTag: latest
+  - name: ocr-worker-rt
+    newName: us-central1-docker.pkg.dev/<YOUR_PROJECT_ID>/ocr-repository/ocr-worker-rt
+    newTag: latest
+  - name: ocr-vlm-qwen
+    newName: us-central1-docker.pkg.dev/<YOUR_PROJECT_ID>/ocr-repository/ocr-vlm-qwen
+    newTag: latest
 
 # Define Variables in a ConfigMap (Shared by Worker and vLLM)
 configMapGenerator:

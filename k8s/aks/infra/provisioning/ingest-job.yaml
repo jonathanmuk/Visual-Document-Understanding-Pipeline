@@ -46,10 +46,10 @@ spec:
                   marker = f"/mnt/models/.ingested_{safe_id}"
                   
                   if os.path.exists(marker):
-                      print(f"✅ Marker found for {model_id}. Skipping.")
+                      print(f"Marker found for {model_id}. Skipping.")
                       continue
 
-                  print(f"🚀 Starting ingestion for {model_id}")
+                  print(f"Starting ingestion for {model_id}")
                   os.makedirs(dest_dir, exist_ok=True)
 
                   try:
@@ -61,7 +61,7 @@ spec:
                           data = json.loads(response.read().decode())
                           files = [s["rfilename"] for s in data["siblings"]]
                       
-                      print(f"📦 Found {len(files)} files for {model_id}.")
+                      print(f"Found {len(files)} files for {model_id}.")
 
                       for i, filename in enumerate(files):
                           url = f"https://huggingface.co/{model_id}/resolve/main/{filename}"
@@ -69,10 +69,10 @@ spec:
                           os.makedirs(os.path.dirname(local_path), exist_ok=True)
                           
                           if os.path.exists(local_path):
-                              print(f"  [{i+1}/{len(files)}] {filename} already exists... [SKIPPED]")
+                              print(f"[{i+1}/{len(files)}] {filename} already exists... [SKIPPED]")
                               continue
 
-                          print(f"  [{i+1}/{len(files)}] {filename}...", end="", flush=True)
+                          print(f"[{i+1}/{len(files)}] {filename}...", end="", flush=True)
                           for attempt in range(3):
                               try:
                                   file_req = urllib.request.Request(url)
@@ -82,19 +82,19 @@ spec:
                                           chunk = r.read(1024 * 1024)
                                           if not chunk: break
                                           f.write(chunk)
-                                  print(" [DONE]")
+                                  print("[DONE]")
                                   break
                               except Exception as e:
                                   if attempt == 2: raise e
-                                  print(f" [RETRY {attempt+1}]", end="", flush=True)
+                                  print(f"[RETRY {attempt+1}]", end="", flush=True)
                                   time.sleep(5)
 
                       with open(marker, "w") as f:
                           f.write(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
-                      print(f"✅ Ingestion complete for {model_id}")
+                      print(f"Ingestion complete for {model_id}")
 
                   except Exception as e:
-                      print(f"\n❌ Fatal Error for {model_id}: {e}")
+                      print(f"\n Fatal Error for {model_id}: {e}")
                       sys.exit(1)
           volumeMounts:
             - name: model-weights

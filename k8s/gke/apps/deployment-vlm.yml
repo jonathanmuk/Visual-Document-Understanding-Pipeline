@@ -23,7 +23,7 @@ spec:
           effect: "NoSchedule"
       containers:
         - name: ocr-vlm-server
-          image: us-central1-docker.pkg.dev/<PROJECT_ID>/ocr-repository/ocr-vlm-qwen:latest
+          image: ocr-vlm-qwen  # registry set in kustomization.yml
           imagePullPolicy: Always
           securityContext:
             capabilities:

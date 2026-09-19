@@ -3,7 +3,7 @@
 This guide takes you from zero to a GPU-ready GKE cluster for the OCR pipeline.
 Same **asymmetric hardware** idea as the Azure guide: cheap **T4** nodes for
 orchestration and layout extraction, premium **A100** nodes for the heavy VLM
-generation — kept on T4 (not the newer L4) so the two clouds stay
+generation. It is kept on T4 (not the newer L4) so the two clouds stay
 architecturally comparable (see `cloud_comparison.md`). Read this fully before
 spending money.
 
@@ -11,17 +11,17 @@ spending money.
 
 ## 1. Target machine types
 
-| Role                          | Machine type       | GPU                          | vCPUs/VM |
+| Role | Machine type | GPU | vCPUs/VM |
 |-------------------------------|--------------------|------------------------------|----------|
-| Layout workers + orchestrator | `n1-standard-4`    | 1× NVIDIA T4 (16 GB)         | 4        |
-| VLM inference                 | `a2-ultragpu-1g`   | 1× NVIDIA A100 80 GB         | 12       |
+| Layout workers + orchestrator | `n1-standard-4` | 1× NVIDIA T4 (16 GB) | 4 |
+| VLM inference | `a2-ultragpu-1g` | 1× NVIDIA A100 80 GB | 12 |
 
 The T4 is attached as an accelerator on `n1-standard-4`
 (`--accelerator type=nvidia-tesla-t4,count=1`) rather than a fixed T4 SKU like
-Azure's — that's the `gpunpt4` node pool built in `gke_deployment.md`.
+Azure's. That's the `gpunpt4` node pool built in `gke_deployment.md`.
 
 > **If you'd rather use L4 instead of T4:** GCP's modern inference card is the
-> **L4** (`g2-standard-16`, 24 GB VRAM, Ada Lovelace, FP8 support) — cheap,
+> **L4** (`g2-standard-16`, 24 GB VRAM, Ada Lovelace, FP8 support). It is cheap,
 > widely available, and strong enough to skip the A100 pool entirely for some
 > models. It's a reasonable substitution, but it changes the node pool from
 > what `gke_deployment.md` builds (see the callout in Section 7 for the
@@ -35,12 +35,12 @@ Azure's — that's the `gpunpt4` node pool built in `gke_deployment.md`.
 
 ## 2. Quota to request (per region)
 
-On GCP, GPU quota is measured in **GPU count**, not vCPUs — simpler than Azure.
+On GCP, GPU quota is measured in **GPU count**, not vCPUs, which is simpler than Azure.
 
-| Quota metric              | Request | Notes                          |
+| Quota metric | Request | Notes |
 |----------------------------|---------|--------------------------------|
-| `NVIDIA T4 GPUs`          | 4       | Matches the 4-node max on the `gpunpt4` pool in `gke_deployment.md` |
-| `NVIDIA A100 80GB GPUs`   | 4       | Matches the 4-node max on the `gpunpa100` pool. Use `NVIDIA A100 GPUs` for 40 GB |
+| `NVIDIA T4 GPUs` | 4 | Matches the 4-node max on the `gpunpt4` pool in `gke_deployment.md` |
+| `NVIDIA A100 80GB GPUs` | 4 | Matches the 4-node max on the `gpunpa100` pool. Use `NVIDIA A100 GPUs` for 40 GB |
 
 > Both start at **0** on a new project. Going the L4 route instead? Request
 > `NVIDIA L4 GPUs` → 4 in place of the T4 row.
@@ -86,7 +86,7 @@ GPU requires a project with **billing enabled** and a **fully activated**
 gcloud billing projects link <YOUR_PROJECT_ID> \
   --billing-account=XXXXXX-XXXXXX-XXXXXX
 
-gcloud billing projects describe <YOUR_PROJECT_ID>   # billingEnabled: true
+gcloud billing projects describe <YOUR_PROJECT_ID> # billingEnabled: true
 
 # Enable required services
 gcloud services enable container.googleapis.com compute.googleapis.com \
@@ -94,7 +94,7 @@ gcloud services enable container.googleapis.com compute.googleapis.com \
 ```
 
 If `gcloud services enable` fails with `UREQ_PROJECT_BILLING_NOT_FOUND`, billing
-isn't linked yet — fix step above first.
+isn't linked yet. Fix the step above first.
 
 ---
 
@@ -119,7 +119,7 @@ region, select the metric, and use this justification (one per GPU type):
 > The NVIDIA T4 node pool handles layout extraction with cluster autoscaling
 > and scale-to-zero for cost efficiency. Requesting 4 T4 GPUs.
 
-Keep it short. Request GPU types in separate tickets — T4 usually clears fast,
+Keep it short. Request GPU types in separate tickets. T4 usually clears fast,
 A100 can take longer.
 
 ---
@@ -145,11 +145,11 @@ own region before choosing.
 
 ---
 
-## 7. Capacity-proof cluster (disposable — not the real deployment)
+## 7. Capacity-proof cluster (disposable, not the real deployment)
 
 This proves one level up from the zone check above: that **GKE itself** can
 actually schedule pods onto both GPU types via the cluster autoscaler, before
-you invest time in the full build. This cluster is throwaway — **delete it at
+you invest time in the full build. This cluster is throwaway. **Delete it at
 the end of this section.** The real, production cluster (Artifact Registry,
 model ingestion, Redis, the API gateway, KEDA, the works) is built fresh in
 [`gke_deployment.md`](gke_deployment.md) and does not reuse anything created
@@ -192,11 +192,11 @@ kubectl get nodes
 > **Going the L4 route instead?** Swap the T4 pool for:
 > ```bash
 > gcloud container node-pools create l4-workers \
->   --cluster=$CLUSTER --zone=$ZONE \
->   --machine-type=g2-standard-16 \
->   --accelerator=type=nvidia-l4,count=1,gpu-driver-version=default \
->   --enable-autoscaling --min-nodes=0 --max-nodes=4 \
->   --node-labels=workload=layout --spot
+> --cluster=$CLUSTER --zone=$ZONE \
+> --machine-type=g2-standard-16 \
+> --accelerator=type=nvidia-l4,count=1,gpu-driver-version=default \
+> --enable-autoscaling --min-nodes=0 --max-nodes=4 \
+> --node-labels=workload=layout --spot
 > ```
 
 Target each workload to its pool with a `nodeSelector` (`workload: layout` /
@@ -206,7 +206,7 @@ Target each workload to its pool with a `nodeSelector` (`workload: layout` /
 > quota. Keep `--min-nodes=0` for scale-to-zero.
 
 Once you've confirmed `kubectl get nodes` shows both pools scheduling GPU pods
-correctly, **tear the whole thing down** — this cluster has done its job:
+correctly, **tear the whole thing down**. This cluster has done its job:
 
 ```bash
 gcloud container clusters delete $CLUSTER --zone $ZONE --quiet
@@ -218,25 +218,25 @@ gcloud container clusters delete $CLUSTER --zone $ZONE --quiet
 
 - Set a **Budget + alerts** in *Billing → Budgets & alerts* (50/80/100 %).
 - Keep **scale-to-zero** on both pools.
-- For interruptible batch OCR, consider `--spot` on either pool — 70-90%
+- For interruptible batch OCR, consider `--spot` on either pool. It is 70 to 90 percent
   cheaper, but reclaimed with short notice, so only for checkpoint-safe work.
 
 ---
 
-## Appendix — Azure ↔ GCP quick map
+## Appendix: Azure to GCP quick map
 
-| Concept            | Azure                              | GCP                              |
+| Concept | Azure | GCP |
 |---------------------|--------------------------------------|-------------------------------------|
-| Light GPU          | T4 (`NC16as_T4_v3`)                | T4 (`n1-standard-4` + accelerator) |
-| Heavy GPU          | A100 80GB (`NC24ads_A100_v4`)      | A100 80GB (`a2-ultragpu-1g`)     |
-| Quota unit         | vCPUs per family                   | GPU count                        |
-| Managed K8s        | AKS                                | GKE                              |
-| Driver install     | NVIDIA device plugin (manual)      | `gpu-driver-version=default`     |
-| Trial blocks GPU   | Yes → upgrade to Pay-As-You-Go     | Yes → activate full account      |
+| Light GPU | T4 (`NC16as_T4_v3`) | T4 (`n1-standard-4` + accelerator) |
+| Heavy GPU | A100 80GB (`NC24ads_A100_v4`) | A100 80GB (`a2-ultragpu-1g`) |
+| Quota unit | vCPUs per family | GPU count |
+| Managed K8s | AKS | GKE |
+| Driver install | NVIDIA device plugin (manual) | `gpu-driver-version=default` |
+| Trial blocks GPU | Yes → upgrade to Pay-As-You-Go | Yes → activate full account |
 
 ---
 
-## ✅ Next step
+## Next step
 
 Quota is approved, capacity is confirmed, and the disposable smoke-test
 cluster from Section 7 is deleted. Head to
