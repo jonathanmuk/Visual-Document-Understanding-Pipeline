@@ -58,9 +58,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install redis
-      - name: Build and start API + Redis
+      - name: Build and start Redis, API, and reaper
         run: docker compose -f docker-compose.test.yml up --build -d
-      - name: Smoke test the built image
+      - name: Smoke test the built images
         run: python tests/integration/smoke.py
       - name: Logs on failure
         if: failure()
@@ -68,6 +68,16 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose -f docker-compose.test.yml down
+
+  worker-image:
+    name: Worker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The worker image is large (CUDA base). Building it proves the Dockerfile
+      # and its pinned dependencies still resolve; it is not run here.
+      - run: docker build -t ocr-worker-rt:ci ./realtime_consumer
+      - run: docker run --rm --entrypoint python3 ocr-worker-rt:ci -c "import worker, vus_queue, vus_metrics, glmocr; print('worker imports OK')"
 
   manifests:
     name: Kubernetes manifests build
@@ -77,3 +87,6 @@ jobs:
       - uses: azure/setup-kubectl@v4
       - run: kubectl kustomize k8s/aks/ > /dev/null
       - run: kubectl kustomize k8s/gke/ > /dev/null
+      - name: Both clouds render the same objects
+        run: |
+          diff <(kubectl kustomize k8s/aks/ | grep -E '^kind:|^  name:') <(kubectl kustomize k8s/gke/ | grep -E '^kind:|^  name:')

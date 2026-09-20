@@ -4,10 +4,14 @@ kind: Kustomization
 resources:
   - apps/deployment-api.yml
   - apps/deployment-worker.yml
+  - apps/deployment-reaper.yml
   - apps/deployment-vlm.yml
   - apps/redis-deployment.yml
   - apps/keda-scaler.yml
   - networking/service.yml
+  - observability/servicemonitors.yml
+  - observability/alerts.yml
+  - observability/grafana-dashboard.yml
 
 # Labels for resource grouping
 labels:
@@ -25,6 +29,9 @@ images:
   - name: ocr-worker-rt
     newName: <YOUR_ACR_NAME>.azurecr.io/ocr-worker-rt
     newTag: latest
+  - name: ocr-reaper
+    newName: <YOUR_ACR_NAME>.azurecr.io/ocr-reaper
+    newTag: latest
   - name: ocr-vlm-qwen
     newName: <YOUR_ACR_NAME>.azurecr.io/ocr-vlm-qwen
     newTag: latest
@@ -40,6 +47,12 @@ configMapGenerator:
       - MAX_BATCH_SIZE=4
       - BATCH_WINDOW_MS=100
       - GLMOCR_CONFIG_PATH=/app/config.yaml
+      - MAX_ATTEMPTS=3
+      - RESULT_TTL_SECONDS=86400
+      - STALE_AFTER_SECONDS=900
+      - REAPER_INTERVAL_SECONDS=30
+      - METRICS_PORT=9100
+      - LOG_FORMAT=json
       - GLMOCR_PIPELINE_OCR_API_API_HOST=ocr-vlm-service
       - GLMOCR_PIPELINE_OCR_API_API_PORT=8000
       # --- vLLM Server Config ---

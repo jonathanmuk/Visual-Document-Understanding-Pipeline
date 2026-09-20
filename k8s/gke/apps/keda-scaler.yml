@@ -1,3 +1,18 @@
+# KEDA: turns machines on when there is work and off when there is not.
+#
+# The Redis trigger authenticates through TriggerAuthentication, which reads the
+# same Secret the application uses.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: ocr-redis-auth
+  namespace: default
+spec:
+  secretTargetRef:
+    - parameter: password
+      name: ocr-redis-secret
+      key: password
+---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
 metadata:
@@ -18,12 +33,14 @@ spec:
         start: 0 8 * * 1-5
         end: 0 18 * * 1-5
         desiredReplicas: "1"
-    # 2. Aggressive scaling based on Redis Queue Length (T4 Worker)
+    # 2. One worker per waiting task (the worker processes one batch at a time)
     - type: redis
       metadata:
         address: ocr-redis-service.default.svc.cluster.local:6379
         listName: ocr_tasks
-        listLength: "1" # Scale 1 worker for EVERY task in queue
+        listLength: "1"
+      authenticationRef:
+        name: ocr-redis-auth
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject
@@ -35,8 +52,8 @@ spec:
     name: ocr-vlm-deployment
   minReplicaCount: 0
   maxReplicaCount: 4
-  cooldownPeriod: 300 # Shorter cooldown for faster reallocation
-  pollingInterval: 10 # More frequent polling
+  cooldownPeriod: 300
+  pollingInterval: 10
   triggers:
     # 1. Warm-start during business hours
     - type: cron
@@ -45,13 +62,39 @@ spec:
         start: 0 8 * * 1-5
         end: 0 18 * * 1-5
         desiredReplicas: "1"
-    # 2. Aggressive scaling based on vLLM Queue Depth (A100)
+    # 2. Scale from zero: if any document is waiting or in progress, vLLM must
+    #    exist. vLLM's own metric cannot do this, because with no vLLM pod there
+    #    is nothing to scrape and the metric is simply absent. listLength is set
+    #    high so this trigger only ever asks for one replica; the Prometheus
+    #    trigger below decides whether more are needed once vLLM is up.
+    - type: redis
+      metadata:
+        address: ocr-redis-service.default.svc.cluster.local:6379
+        listName: ocr_tasks
+        listLength: "100000"
+        activationListLength: "0"
+      authenticationRef:
+        name: ocr-redis-auth
+    - type: redis
+      metadata:
+        address: ocr-redis-service.default.svc.cluster.local:6379
+        listName: ocr_tasks:processing
+        listLength: "100000"
+        activationListLength: "0"
+      authenticationRef:
+        name: ocr-redis-auth
+    # 3. Scale beyond one when vLLM has requests waiting for a slot.
+    #    Requires the ServiceMonitor in observability/ so the metric exists.
+    #    The label is "namespace" (what the Prometheus Operator attaches), not
+    #    the "kubernetes_namespace" the inherited manifest queried, which never
+    #    matched anything. ignoreNullValues treats "no vLLM yet" as zero rather
+    #    than an error.
     - type: prometheus
       metadata:
         serverAddress: http://prometheus-operated.monitoring.svc:9090
-        metricName: vllm_num_requests_waiting
-        threshold: '1' # Scale if even ONE request is waiting in queue
-        query: sum(vllm:num_requests_waiting{kubernetes_namespace="default"})
+        query: sum(vllm:num_requests_waiting{namespace="default"})
+        threshold: "1"
+        ignoreNullValues: "true"
 ---
 apiVersion: keda.sh/v1alpha1
 kind: ScaledObject

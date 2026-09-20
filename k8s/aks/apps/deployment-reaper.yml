@@ -1,18 +1,19 @@
+# The reaper: puts back tasks whose worker died. Small, always on, CPU pool.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: ocr-api-deployment
+  name: ocr-reaper-deployment
   labels:
-    app: ocr-api
+    app: ocr-reaper
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app: ocr-api
+      app: ocr-reaper
   template:
     metadata:
       labels:
-        app: ocr-api
+        app: ocr-reaper
     spec:
       nodeSelector:
         app: api-gateway
@@ -22,12 +23,12 @@ spec:
           value: "api"
           effect: "NoSchedule"
       containers:
-        - name: ocr-api-rust
-          image: ocr-api-rust  # registry set in kustomization.yml
+        - name: ocr-reaper
+          image: ocr-reaper  # registry set in kustomization.yml
           imagePullPolicy: Always
           ports:
-            - containerPort: 5000
-              name: http
+            - containerPort: 9100
+              name: metrics
           envFrom:
             - configMapRef:
                 name: ocr-pipeline-config
@@ -37,22 +38,30 @@ spec:
                 secretKeyRef:
                   name: ocr-redis-secret
                   key: password
-          # /health says the process is up. /ready says Redis answers, which is
-          # the only thing the API needs to do its job.
           livenessProbe:
             httpGet:
-              path: /health
-              port: http
-            periodSeconds: 10
-          readinessProbe:
-            httpGet:
-              path: /ready
-              port: http
-            periodSeconds: 5
+              path: /metrics
+              port: metrics
+            periodSeconds: 30
           resources:
             requests:
-              cpu: "100m"
-              memory: "128Mi"
+              cpu: "50m"
+              memory: "64Mi"
             limits:
-              cpu: "500m"
-              memory: "256Mi"
+              cpu: "200m"
+              memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocr-reaper-metrics
+  labels:
+    app: ocr-reaper
+spec:
+  selector:
+    app: ocr-reaper
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: metrics
+  type: ClusterIP

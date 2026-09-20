@@ -1,0 +1,7 @@
+# The reaper needs only Redis. It must not carry the CUDA base image of the
+# worker, because it runs on the cheap CPU pool.
+FROM python:3.12-slim
+WORKDIR /app
+RUN pip install --no-cache-dir redis loguru prometheus_client
+COPY vus_queue.py vus_metrics.py reaper.py /app/
+CMD ["python3", "reaper.py"]

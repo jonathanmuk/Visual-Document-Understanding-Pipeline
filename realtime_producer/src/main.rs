@@ -1,20 +1,24 @@
-use ocr_producer_rust::{app, AppState};
+use ocr_producer_rust::{app, redis_client_from_env, AppState};
 use std::sync::Arc;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    let json_logs = std::env::var("LOG_FORMAT")
+        .map(|v| v.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+    if json_logs {
+        tracing_subscriber::fmt().json().init();
+    } else {
+        tracing_subscriber::fmt().init();
+    }
 
-    let redis_host = std::env::var("REDIS_HOST").unwrap_or_else(|_| "ocr-redis-service".to_string());
-    let redis_port = std::env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
-    let redis_url = format!("redis://{}:{}", redis_host, redis_port);
-    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
-
-    let state = Arc::new(AppState { redis_client });
+    let state = Arc::new(AppState {
+        redis_client: redis_client_from_env(),
+    });
     let router = app(state);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 5000));
-    println!("Rust Producer API listening on {}", addr);
+    tracing::info!(%addr, "Rust Producer API listening");
 
     axum::Server::bind(&addr)
         .serve(router.into_make_service())

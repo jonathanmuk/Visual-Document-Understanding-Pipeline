@@ -42,7 +42,7 @@ The headline changes:
 | **Agent interface** | None. An MCP server is promised in the README but no code exists. | A full MCP server exposing tools, resources, and prompts, over stdio locally and Streamable HTTP in the cluster. |
 | **Work durability** | A killed worker silently loses every task it holds. | Reliable queue with in-flight tracking, automatic recovery, bounded retries, and a dead letter queue. |
 | **State durability** | Redis has no persistence, no password, one replica. A restart loses everything. | Persistence enabled, authentication required, results expire on a schedule. |
-| **Autoscaling** | The A100 rule queries a metric nothing publishes, so it cannot fire. | Metrics actually scraped, so the expensive pool scales on real demand. |
+| **Autoscaling** | The A100 rule queried a metric nothing published, with an invalid parameter and a label that never matched, and could never have started the first pod anyway. | Metrics scraped, query corrected, and Redis-driven scale-from-zero, so the expensive pool scales on real demand. |
 | **Failure reporting** | A failed document is marked `done` with empty output and no error. Confirmed in a live run. | Every failure recorded as `failed` with the real reason. Non-files rejected at the door. |
 | **Health** | Only vLLM has probes. The API's `/health` endpoint is never called. | Probes on every component. |
 | **Testing** | None of any kind. | Unit, integration, and end to end tests, running in CI. |
@@ -170,7 +170,15 @@ the source code of the `glmocr` 0.1.4 SDK that the worker depends on.
 
 | # | Gap | Evidence | Severity |
 | :--- | :--- | :--- | :--- |
-| 22 | **An oversized upload is rejected with the wrong status code.** The 10 MB limit is enforced, but the multipart extractor reports the overflow as `400 Bad Request` rather than `413 Payload Too Large`, so a client cannot tell "too big" from "malformed". | Observed by `upload_over_the_size_limit_is_rejected` in `realtime_producer/tests/api.rs`, which pins the current 400 with a comment. | Low. Correct outcome, misleading code. |
+| 22 | **An oversized upload from a client that declares no length is rejected as `400` rather than `413`.** Narrower than first recorded: when `Content-Length` is present, which is what curl, browsers, and every ordinary HTTP library send, the body limit layer already answers `413` before any handler runs. Only a streaming client that omits the length gets the multipart extractor's generic `400`. | Established by two tests in `realtime_producer/tests/api.rs`: `oversized_upload_with_content_length_gets_413` and `oversized_upload_without_content_length_is_still_rejected`. The Phase 1 test had omitted the header, which is why it saw 400. | Trivial. Correct outcome in every case; the code is only imprecise for an unusual client. Accepted as is. |
+
+### Gaps found while building Phase 2 and 3
+
+| # | Gap | Evidence | Severity |
+| :--- | :--- | :--- | :--- |
+| 23 | **vLLM could never scale from zero.** The only demand signal on the A100 scaler was vLLM's own `num_requests_waiting` metric. With zero vLLM pods there is nothing to scrape, so the metric is absent, so the trigger never fires. Only the business-hours cron could ever start the first A100; outside those hours the system could not process anything. | `k8s/*/apps/keda-scaler.yml` as inherited: the `ocr-vlm-scaler` had a cron trigger and a Prometheus trigger, nothing else. Independent of gap 14 (which is why the metric would be absent even with pods running). | Critical. Compounds gap 14. Fixed in Phase 3 with two Redis triggers on the vLLM scaler. |
+| 24 | **The inherited KEDA Prometheus trigger used a parameter that no longer exists and a label that never matched.** `metricName` is not in the current KEDA scaler's parameter list, and the query filtered on `kubernetes_namespace="default"` where the Prometheus Operator attaches `namespace`. | KEDA prometheus scaler documentation (version 2.20) lists no `metricName`. Prometheus Operator labelling convention. | Medium. Even with gaps 14 and 23 fixed, the query would have matched nothing. Fixed in Phase 3. |
+| 25 | **The SDK destroys the evidence of a failed region before the worker sees it.** In self-hosted mode a region whose recognition fails gets an empty string, and the result formatter then drops empty regions from `json_result`. The returned object is indistinguishable from a page that genuinely had fewer regions. | `glmocr/postprocess/result_formatter.py` lines 173 to 176 (skip empty content), `glmocr/pipeline/pipeline.py` lines 446 to 455 (empty string on failure). A non-200 response at line 451 is not even logged by the pipeline; only the HTTP client below it logs. | High. This is the mechanism behind gap 20's self-hosted half. Worked around in Phase 2 by counting the SDK's own final-failure log lines during each parse; the count is per batch, not per document. The correct fix is upstream: keep failed regions with an error marker. |
 
 ### External dependencies: verified real
 
@@ -605,9 +613,8 @@ changes.
 **Why first:** the folder renames touch paths referenced in Dockerfiles,
 deployment guides, and the README. Doing this after other work means redoing it.
 
-- [ ] **Owner action:** point the git remote at your own repository. It still
-      targets `neural-maze/production-ocr-course.git`. Run
-      `git remote set-url origin <your-repository-url>`.
+- [x] Git remote points at the owner's repository
+      (`jonathanmuk/Visual-Understanding-System`). Done by the owner.
 - [x] Rename `client_rt_producer` to `realtime_producer`. Done with `git mv` so
       history follows the files.
 - [x] Rename `client_rt_consumer` to `realtime_consumer`. Same.
@@ -705,13 +712,10 @@ before anything risky changes.
       are created in `main()` and passed in, and the collector window is its own
       function. The module can now be imported and tested without the SDK
       installed. Behaviour is unchanged.
-- [x] Python tests, 13 in total, using `fakeredis`: three on the collector
-      window, seven on batch processing (result writing, temp-file naming and
-      cleanup, status transitions, unknown tasks, engine failure). The remaining
-      three are the gap 20 behaviours, written as they *should* behave and marked
-      `xfail(strict=True)`. They fail today. The moment Phase 2 fixes gap 20 they
-      will pass, and pytest will insist the marker be removed. Known bugs are
-      now executable, not just documented.
+- [x] Python tests, 13 at the time, using `fakeredis`: three on the collector
+      window, seven on batch processing, and three gap 20 behaviours written as
+      they *should* behave and marked `xfail(strict=True)`. (Phase 2 fixed gap 20
+      and those three became ordinary passing tests; the suite is now 22.)
 - [x] Container smoke test: `docker-compose.test.yml` starts Redis and the
       built API image; `tests/integration/smoke.py` runs 21 checks against
       them, including that stored bytes round-trip exactly and that a PNG and a
@@ -734,116 +738,161 @@ passed against the freshly built image), `kubectl kustomize` on both trees.
 
 ### Phase 2: Reliability Core
 
-**Goal:** the system stops losing work.
+**Status: complete, 19 September 2026.**
 
-**Depends on:** Phase 1's test harness. Do not refactor the queue without tests.
+**Goal:** the system stops losing work, and stops lying about it.
+
+**Depends on:** Phase 1's test harness.
 
 **Queue durability (gaps 8 and 9):**
 
-- [ ] Replace `brpop` with `BLMOVE ocr_tasks <in-progress list> RIGHT LEFT`,
-      so claiming a task is atomic and leaves a trace. Do not use `BRPOPLPUSH`:
-      Redis deprecated it in 6.2 and `BLMOVE RIGHT LEFT` is the documented
-      replacement.
-- [ ] Remove the in-flight entry only after the result is durably written.
-- [ ] Fix the collector window to use the same direction as the initial pop, so
-      ordering is consistently oldest-first.
-- [ ] Add a retry counter per task.
-- [ ] Add a dead letter queue for tasks exceeding the retry limit, preserving the
-      error so failures can be diagnosed.
-- [ ] Build the reaper: a loop that returns in-flight tasks older than a
-      threshold to the pending queue. Run it as a separate low-cost deployment on
-      the CPU pool, not on a GPU node.
+- [x] The worker claims with `BLMOVE ocr_tasks ocr_tasks:processing RIGHT LEFT`,
+      so a task moves from the waiting queue to the in-progress list in one
+      atomic step. `BRPOPLPUSH` is not used: Redis deprecated it in 6.2.
+- [x] The in-progress entry is removed only after the result, or the failure, is
+      written. `finish_done` and `finish_failed` in `vus_queue.py` do both.
+- [x] The collector window uses the same direction (`LMOVE RIGHT LEFT`), so a
+      batch is consistently oldest-first. Verified by
+      `test_collect_batch_fills_oldest_first_and_moves_all_to_processing`.
+- [x] `attempts` is incremented on every claim (`mark_claimed`).
+- [x] Dead letter queue `ocr_tasks:dead`, with the error preserved on the task
+      hash. A task is dead-lettered after `MAX_ATTEMPTS` (default 3), or
+      immediately for an error that cannot succeed on retry.
+- [x] The reaper: `realtime_consumer/reaper.py`, its own tiny image
+      (`Dockerfile.reaper`, Python slim, no CUDA), one replica on the CPU pool.
+      Every `REAPER_INTERVAL_SECONDS` it scans the in-progress list; a claim
+      older than `STALE_AFTER_SECONDS` is requeued at the front, or dead-lettered
+      if out of attempts. A claim with no task data is dropped. Design note: one
+      shared in-progress list with a `claimed_at` stamp per task, rather than a
+      list per worker, so the reaper needs no registry of live workers.
 
 **State durability (gaps 6 and 11):**
 
-- [ ] Enable Redis AOF persistence and attach a PersistentVolumeClaim.
-- [ ] Set a Redis password, delivered via a Kubernetes Secret, and update both
-      the Rust and Python clients to authenticate.
-- [ ] Add a TTL on result keys. A day is a reasonable default. Make it
-      configurable through the ConfigMap.
-- [ ] Decide and document the durability posture: this is a cache-like store with
-      persistence, not a system of record. If a document must never be lost, it
-      belongs in object storage, and that is a Phase 6 consideration.
+- [x] Redis runs `--appendonly yes` on a `PersistentVolumeClaim`, with
+      `strategy: Recreate` because the disk is ReadWriteOnce.
+- [x] Redis requires a password (`--requirepass`) read from the Kubernetes
+      Secret `ocr-redis-secret`. The API, worker, reaper, and KEDA (through a
+      `TriggerAuthentication`) all read the same Secret. Locally the password is
+      optional so Track 0 and Track 1 still work unchanged.
+- [x] Every finished task, done or failed, gets `EXPIRE RESULT_TTL_SECONDS`
+      (default one day, in the ConfigMap).
+- [x] Durability posture documented in the Redis manifest: a durable queue and
+      result cache, not a system of record.
 
-**Honest results (gaps 20 and 21):**
+**Honest results (gaps 20, 21, 22, 25):**
 
-- [ ] Gap 20: after every SDK call, check the result for a failure before writing
-      anything. In MaaS mode that means the `_error` attribute. Mark the task
-      `failed` with the real error message, never `done` with empty output.
-- [ ] Gap 20: treat an empty result as a failure even when no error is recorded.
-      A document that produces no text at all is not a success.
-- [ ] Gap 20: handle the SDK returning fewer results than inputs. Every task in a
-      batch must end in a final state. None may be left at `processing`.
-- [ ] Gap 20, self-hosted mode: detect regions whose recognition failed and came
-      back blank. The SDK only logs a warning for these, so the worker must count
-      them and either fail the task or mark it as partial, with the count in the
-      result. Reading the SDK's result structure to find those regions is the
-      first step.
-- [ ] Classify failures before deciding whether to retry. A billing refusal
-      (Z.ai code `1113`) or an authentication failure (codes `1000` to `1003`)
-      will never succeed on retry and must go straight to `failed`. The SDK
-      currently retries `1113` three times because it arrives with HTTP status
-      `429`, which normally means a temporary rate limit.
-- [ ] Gap 21: reject a `file` field that has no filename, with HTTP `400` and a
-      message explaining that a file upload was expected.
-- [ ] Gap 21: check the file's opening bytes and accept only real PDF, PNG, and
-      JPEG content. Reject everything else with HTTP `415`. These three are the
-      only formats the SDK's MaaS client recognises (`glmocr/maas_client.py`
-      lines 56 to 66), so they are the safe set for both modes.
-- [ ] Gap 21: set the stored file extension from the detected content, never
-      from the uploaded filename. In self-hosted mode the SDK chooses between its
-      PDF and image loaders purely by whether the name ends in `.pdf`
-      (`glmocr/dataloader/page_loader.py` lines 170 and 214). A PDF uploaded as
-      `scan.jpg` would reach the image loader and fail.
-- [ ] Gap 22: return `413 Payload Too Large` for an oversized upload instead of
-      `400`. The pinned assertion in `tests/api.rs` will need updating to `413`
-      at the same time.
-- [ ] Add a test for each case above, using the exact failures observed in the
-      16 September run as the test inputs. The three `xfail` tests in
-      `realtime_consumer/tests/test_worker.py` are the starting point: remove
-      their markers as each behaviour is fixed.
+- [x] `evaluate_result` in `worker.py` checks every SDK result: `_error` set,
+      result missing, or empty output all count as failure, with the reason.
+- [x] Fewer results than inputs: the missing ones are failed, never left at
+      `processing`. Verified by `test_fewer_results_than_tasks_never_leaves_a_task_at_processing`.
+- [x] Self-hosted partial failures: `FailedRegionCounter` attaches to the SDK's
+      `glmocr` logger during each parse and counts its final-failure lines
+      (`Received bad status code`, `Error during recognition`, `Recognition failed`),
+      ignoring retry lines. A non-zero count puts a `warning` on every task in
+      the batch and increments `vus_regions_failed_total`. Per batch, not per
+      document; see gap 25 for why that is the best available from outside the
+      SDK.
+- [x] `is_non_retryable` in `vus_queue.py` matches Z.ai codes 1113, 1000, 1001,
+      1003 and `MissingApiKeyError`; those fail immediately with "not retried"
+      in the error. Everything else is retried up to `MAX_ATTEMPTS`.
+- [x] The API rejects a `file` field with no filename with `400` and a message
+      that names the `@` fix. Verified by
+      `text_in_the_file_field_is_rejected_with_a_helpful_message`.
+- [x] The API reads the first bytes and accepts only PDF, PNG, and JPEG; anything
+      else is `415`. An empty file is `400`. The stored `extension` comes from the
+      detected content, never from the filename; verified by
+      `stored_extension_comes_from_content_not_filename` with a PDF named `.jpg`.
+- [x] `413` for oversized uploads that declare a length, which every ordinary
+      client does. Gap 22 narrowed to the no-length case and accepted as is.
+- [x] The three former `xfail` tests now pass as ordinary assertions, and the
+      exact 16 September failures are test inputs: the `1113` billing refusal,
+      the path-as-text upload, the empty result.
 
 **Health (gap 15):**
 
-- [ ] Add liveness and readiness probes to the Rust API, pointing at the
-      `/health` endpoint that already exists and is currently never called.
-- [ ] Add a health mechanism to the worker. It has no HTTP server, so use an
-      `exec` probe against a heartbeat file the worker touches each loop
-      iteration, or add a minimal health endpoint.
+- [x] API: `livenessProbe` on `/health`, `readinessProbe` on the new `/ready`,
+      which pings Redis. A pod whose Redis is unreachable takes no traffic.
+- [x] Worker: a heartbeat file touched every 5 seconds from the event loop, which
+      keeps running during a long parse because the parse is in a thread. An
+      `exec` probe checks the file is under a minute old. A `startupProbe` allows
+      five minutes for the SDK and layout model to load.
+- [x] Reaper: `livenessProbe` on its metrics port.
+- [x] Redis: liveness and readiness through `redis-cli ping` with the password.
 
-**Done when:** you can `kubectl delete pod` a worker mid-batch and every task
-still completes.
+**Verified by:** 22 Python tests (`pytest`), including
+`test_worker_killed_mid_batch_task_still_completes`, which is the plan's "done
+when" scenario executed against a fake Redis: claim, die, reaper requeues, next
+worker completes on attempt 2. 17 Rust tests. The 47-check container smoke test
+runs the real reaper against a real password-protected, persistent Redis and
+watches it requeue a stale claim and dead-letter an exhausted one, and confirms
+the API's every rejection path and the resulting metrics. Run three times from a
+clean start with identical results.
+
+**Not verified here:** `kubectl delete pod` on a real cluster. The same sequence
+is tested at the unit and container level; the cluster run is described in the
+deployment guides under "Verify the reliability pieces".
 
 ---
 
 ### Phase 3: Observability and Working Autoscaling
 
+**Status: complete, 19 September 2026** (cluster verification pending, marked
+below).
+
 **Goal:** the metrics loop actually closes, so the expensive pool scales.
 
-**Depends on:** Phase 2, so that what you observe is a stable system.
+**Depends on:** Phase 2.
 
-- [ ] Gap 14, the critical one: add a `ServiceMonitor` for the vLLM service so
-      Prometheus scrapes it and `vllm:num_requests_waiting` exists. Verify with
-      a direct Prometheus query before trusting the KEDA rule.
-- [ ] Add a `Service` for the vLLM metrics port if the existing one does not
-      expose it.
-- [ ] Confirm the KEDA Prometheus trigger's namespace label selector matches what
-      the ServiceMonitor actually produces. The rule filters on
-      `kubernetes_namespace="default"` and label naming varies by Prometheus
-      configuration.
-- [ ] Export application metrics from the worker: queue depth, batch size,
-      per-stage duration, retry count, dead letter count.
-- [ ] Export metrics from the Rust API: request rate, upload size distribution,
-      cache hit rate once Phase 5 lands.
-- [ ] Replace emoji log lines with structured JSON logging, carrying `task_id` on
-      every line so a document can be traced across all components.
-- [ ] Build one Grafana dashboard: queue depth, GPU utilisation, pages per
-      second, error rate, and estimated cost per page on a single screen.
-- [ ] Add alerts for a growing dead letter queue and for a queue that is not
-      draining.
+- [x] Gap 14: `ServiceMonitor` objects for vLLM, the worker, the reaper, and the
+      API, in `k8s/*/observability/servicemonitors.yml`. The vLLM and API
+      Service ports are now named (`http`) so the monitors can reference them.
+- [x] Gap 24: the vLLM scaler's Prometheus trigger no longer uses `metricName`
+      (not a valid parameter in current KEDA) and filters on `namespace`, the
+      label the Prometheus Operator attaches, instead of `kubernetes_namespace`.
+      `ignoreNullValues` is set so "no vLLM yet" reads as zero rather than an
+      error.
+- [x] Gap 23: two Redis triggers on the vLLM scaler, on the waiting queue and the
+      in-progress list, with `listLength` set high so each asks for exactly one
+      replica when anything is pending. This is what gets vLLM from zero to one;
+      the Prometheus trigger then decides whether more are needed. Both use the
+      same `TriggerAuthentication` as the worker scaler.
+- [x] Worker metrics on `:9100/metrics`: `vus_batch_size`, `vus_stage_seconds`
+      by stage (prepare, parse, write), `vus_tasks_total` by outcome (done,
+      requeued, failed, orphan), `vus_regions_failed_total`.
+- [x] Reaper metrics: `vus_queue_depth` by queue (waiting, processing, dead),
+      `vus_reaper_actions_total` by action. The reaper publishes the depths
+      because it is the one process guaranteed to be running when the workers
+      are scaled to zero.
+- [x] API metrics on `/metrics`: `vus_http_requests_total` by route pattern and
+      status (route pattern, not raw path, so task IDs do not explode the label
+      set), `vus_uploads_rejected_total` by reason, `vus_upload_bytes` by
+      detected type. Known label sets are created at startup so dashboards see
+      zero rather than no data.
+- [x] Structured JSON logging in all three services when `LOG_FORMAT=json` (set
+      in the ConfigMap), with `task_id` bound on every task-related line.
+- [x] Grafana dashboard **Visual Understanding System**, ten panels, delivered as
+      a ConfigMap the kube-prometheus-stack sidecar loads automatically. JSON
+      validated.
+- [x] Five alerts as a `PrometheusRule`: dead letter queue growing, queue not
+      draining, claimed tasks not finishing, vLLM absent while work waits, model
+      failing on many regions.
+- [x] DCGM exporter and its ServiceMonitor stated explicitly in the GPU Operator
+      values (they are on by default in the chart; now nobody has to wonder).
+- [x] The deployment guides gained: the Secret creation step, the reaper image
+      build, a verification section that queries Prometheus for the four
+      targets, and the kill-a-worker acceptance test.
+- [ ] **Cluster verification, owner action:** submit a burst of documents and
+      watch the A100 pool scale from zero, up, and back down in Grafana. Every
+      manifest builds and every object renders identically on both clouds, but
+      scaling behaviour can only be observed on real hardware. The
+      "done when" for this phase is therefore not yet observed.
 
-**Done when:** you submit a burst of documents and watch the A100 pool scale up
-in Grafana, then scale back to zero afterwards.
+**Verified by:** `kubectl kustomize` on both clouds (22 objects each, identical
+kinds and names, checked by a new CI step). All YAML parses. Dashboard JSON
+parses. The API's metrics endpoint is exercised by 4 Rust tests and 5 smoke
+checks; the reaper's by 3 smoke checks. KEDA parameter names and the
+`TriggerAuthentication` shape were checked against the KEDA documentation for
+the redis-lists and prometheus scalers.
 
 ---
 
@@ -1012,10 +1061,10 @@ Update this table as phases complete.
 
 | Phase | Name | Gaps closed | Status | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| 0 | Repository Foundation | 3 | Complete | Owner still to set git remote |
+| 0 | Repository Foundation | 3 | Complete | Git remote set by owner, 19 Sep |
 | 1 | Truth, Consistency, Tests | 2, 4, 5, 7, 12, 13, 19 | Complete | OCR fixtures wait on Track 1 |
-| 2 | Reliability Core | 6, 8, 9, 11, 15, 20, 21, 22 | Not started | Highest value for stability |
-| 3 | Observability and Autoscaling | 14 | Not started | Unblocks A100 scaling |
+| 2 | Reliability Core | 6, 8, 9, 11, 15, 20, 21, 22, 25 | Complete | Cluster kill-test still to observe |
+| 3 | Observability and Autoscaling | 14, 23, 24 | Complete | Scale-up on real hardware still to observe |
 | 4 | The MCP Server | 1 | Not started | The flagship feature |
 | 5 | Performance and Efficiency | 10 | Not started | Baseline first |
 | 6 | The Intelligence Layer | none, additive | Not started | Where domain value lives |
@@ -1039,7 +1088,10 @@ Every gap in the register is assigned to a phase. Nothing is orphaned.
 | 9 Queue ordering | 2 | 19 Inert vLLM flag | 1 |
 | 10 Base64 overhead | 5 | 20 Failures reported as success | 2 |
 | | | 21 Non-files accepted as documents | 2 |
-| | | 22 Wrong status for oversized upload | 2 |
+| | | 22 Wrong status for oversized upload | 2 (narrowed, accepted) |
+| | | 23 vLLM cannot scale from zero | 3 |
+| | | 24 Invalid KEDA parameter and label | 3 |
+| | | 25 SDK hides failed regions | 2 (worked around) |
 
 ---
 

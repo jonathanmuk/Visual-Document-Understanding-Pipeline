@@ -79,4 +79,5 @@ spec:
     - protocol: TCP
       port: 8000
       targetPort: 8000
+      name: http   # named so the ServiceMonitor can find /metrics on it
   type: ClusterIP

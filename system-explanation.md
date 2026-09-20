@@ -1355,6 +1355,16 @@ qualified look at it.
 Things I found while reading the repository that you should know about before
 you build on it. None of these are catastrophic. All of them are worth knowing.
 
+**Status as of 19 September 2026.** This list is kept as written so the history
+is visible. The live register, with evidence and phase assignments, is in
+`implementation-plan.md`. In brief: gaps 3, 4, 5, 12, and 13 were closed in
+Phases 0 and 1; gaps 6, 8, 9, and 11 (and the later-found 14, 15, 20, 21, 22) in
+Phases 2 and 3. Gap 7 (no tests) is closed: there are 17 Rust tests, 22 Python
+tests, and a 47-check container smoke test, all run on every push. Gap 1 (no MCP
+server) and gap 10 (base64) remain, assigned to Phases 4 and 5. The system now
+also has a component this document did not originally describe, the **reaper**;
+the README's Component 6 explains it.
+
 **1. The MCP server does not exist.** Week 6 of the README promises "wrapping
 the pipeline in an MCP server for Claude Code". There is no MCP code anywhere in
 the repository. If you want that capability, you are writing it from scratch.

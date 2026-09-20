@@ -216,9 +216,11 @@ It doesn't perform OCR itself but just receives your job, puts it in line, then 
 
 | Endpoint | What it does |
 | :--- | :--- |
-| `POST /process` | You upload a file. It generates a unique ID, stores the file in Redis, adds the ID to the work queue, and immediately returns `{ task_id, status: "queued" }` with HTTP 202 Accepted. |
-| `GET /status/{task_id}` | You ask about your ticket. It looks up the ID in Redis and returns the status, plus the result if it is finished, plus the error if it failed. |
-| `GET /health` | Returns OK. Kubernetes pings this constantly to decide whether the pod is alive. |
+| `POST /process` | You upload a file. The API checks it is really a PDF, PNG, or JPEG by reading its first bytes, generates a unique ID, stores the file in Redis, adds the ID to the waiting queue, and immediately returns `{ task_id, status: "queued" }` with HTTP 202 Accepted. Text in the file field gets 400, an unsupported format gets 415, and anything over 10 MB gets 413. |
+| `GET /status/{task_id}` | You ask about your ticket. Returns `status` (queued, processing, done, or failed), `attempts`, the `result` once done, the `error` if it failed, and a `warning` if it finished with parts missing. |
+| `GET /health` | Returns OK if the process is up. Kubernetes uses this to decide whether to restart the pod. |
+| `GET /ready` | Returns OK only if Redis answers. Kubernetes uses this to decide whether to send the pod traffic. |
+| `GET /metrics` | Prometheus metrics: requests by route and status, uploads rejected by reason, upload sizes by type. |
 
 
 
@@ -247,10 +249,14 @@ read it back as text.
 
 **Job:** hold the queue and hold the data
 
-Redis stores exactly two kinds of thing:
+Redis holds four structures:
 
-1. A list called `ocr_tasks` containing task IDs waiting to be processed. This is the queue.
-2. A hash per task, keyed `task:{id}`, holding status, filename, extension, the base64 file data, and eventually the result.
+1. `ocr_tasks`, the **waiting queue**. Task IDs that nobody has picked up yet. New ones go on at the head; workers take from the tail, so the oldest goes first.
+2. `ocr_tasks:processing`, the **in-progress list**. A task is moved here in the same instant a worker claims it, and removed only when it reaches a final state. A task is never in limbo: it is on exactly one of these two lists, or it is finished.
+3. `ocr_tasks:dead`, the **dead letter queue**. Tasks that failed for good, kept so an operator can see what went wrong.
+4. One hash per task, keyed `task:{id}`, holding status, filename, the detected extension, the file data, how many attempts it has had, when it was claimed, and eventually the result, error, or warning. Finished tasks expire after a day (`RESULT_TTL_SECONDS`), so memory does not grow forever.
+
+Redis requires a password (every component reads it from one Kubernetes Secret), writes every change to disk so a restart loses nothing, and runs on a persistent volume.
 
 The queue is the shock absorber of the entire system. Uploads arrive in bursts (someone drags in 500 invoices at once). GPUs process at a steady rate. Without a buffer between them, either the API rejects uploads or the GPU is alternately overwhelmed and idle. The queue smooths this out completely.
 
@@ -269,14 +275,17 @@ One clever touch: when the worker finishes, it writes `"data": ""` back to Redis
 This is the brain of the pipeline, and it is only about 130 lines of Python. It
 runs an endless loop:
 
-**Step 1: Wait for a job.** It calls `brpop` on the `ocr_tasks` list, which
-blocks (sleeps) until something appears. This is important: it does not
-repeatedly ask "anything yet? anything yet?", which would burn CPU. It sleeps
-until Redis wakes it.
+**Step 1: Wait for a job.** It asks Redis to move the oldest waiting task onto
+the in-progress list, and blocks (sleeps) until one exists. This is important
+twice over: it does not repeatedly ask "anything yet? anything yet?", which would
+burn CPU, and because the move is one atomic Redis command (`BLMOVE`), there is
+no moment where the task has left the queue but not yet arrived anywhere. If the
+worker dies a millisecond later, the task is still on the in-progress list.
 
 **Step 2: The collector window.** Once one job arrives, instead of processing it
 immediately, the worker waits up to 100 milliseconds to see whether more jobs
-turn up, collecting up to 4 in total.
+turn up, collecting up to 4 in total. Each one is moved to the in-progress list
+the same way.
 
 **The analogy:** a lift that waits three seconds before closing its doors. You
 lose three seconds on the first passenger and save an entire round trip when
@@ -322,9 +331,22 @@ setting means the worker fires up to 512 concurrent requests at the vLLM server.
 This number is chosen deliberately to match vLLM's own `MAX_NUM_SEQS=512`: the
 worker is sized to exactly fill the engine's capacity and no more.
 
-**Step 8: Assemble and store the result.** The pieces come back, get stitched
-into a single Markdown document plus a JSON structure describing the layout, and
-both get written to Redis with `status: "done"`.
+**Step 8: Check the result, then store it.** The pieces come back, get stitched
+into a single Markdown document plus a JSON structure describing the layout. But
+before anything is written, the worker checks the result is real: if the SDK
+recorded an error, returned nothing, or returned an empty document, the task is
+**not** marked done. A failure that could succeed next time (a network blip, an
+overloaded model) puts the task back on the waiting queue for another attempt, up
+to `MAX_ATTEMPTS`. A failure that cannot succeed on retry (no credit on the
+account, a bad API key) fails immediately. Either way the real reason is stored
+in the `error` field and the task goes to the dead letter queue. Only a genuine
+result is written with `status: "done"`, along with an expiry time.
+
+One more honesty check. In self-hosted mode the SDK quietly drops any region the
+model failed to read, so a page can come back looking complete when it is not.
+The worker listens to the SDK's own log stream during the parse and counts those
+failures. If any happened, the result is still delivered, but with a `warning`
+saying how many regions were lost.
 
 **Step 9: Clean up.** The temporary files in `/dev/shm` are deleted in a
 `finally` block, so they get removed even if processing crashed. Forgetting this
@@ -371,9 +393,13 @@ Three separate scaling rules, each watching a different signal:
 
 **The T4 layout worker** scales from 0 to 10 copies based on the Redis queue containing at least 1 item. That threshold is unusually aggressive: normally you would wait for a queue of several items before adding hardware. The reasoning is that the worker processes one batch at a time and blocks, so a second pending task genuinely needs a second worker rather than waiting behind the first.
 
-**The A100 inference server** scales from 0 to 4 copies based on a Prometheus
-metric, `vllm:num_requests_waiting`, crossing 1. In plain terms: "if the AI
-engine has even one request sitting in its waiting room, start another A100".
+**The A100 inference server** scales from 0 to 4 copies on two signals. The
+first gets it from zero to one: if any document is waiting or in progress, vLLM
+must exist. That comes straight from the Redis lists. The second decides whether
+one is enough: a Prometheus metric, `vllm:num_requests_waiting`, crossing 1. In
+plain terms: "if the AI engine has even one request sitting in its waiting room,
+start another A100". The metric alone could never start the first A100, because
+with no vLLM running there is nothing to measure.
 
 **All three also have a cron rule** keeping one copy alive on weekdays from 8am
 to 6pm New York time. This is the "warm start". Loading a model onto a GPU and
@@ -385,6 +411,51 @@ few idle hours to avoid that.
 The `cooldownPeriod: 300` means the system waits 5 minutes of quiet before
 shutting a machine down, so it does not thrash on and off during a stream of
 sporadic requests.
+
+### Component 6: The Reaper
+
+**Where:** `realtime_consumer/reaper.py`
+
+**Runs on:** the cheap CPU pool, always, one copy
+
+**Job:** put back tasks whose worker died
+
+Every 30 seconds it looks at the in-progress list. Any task that was claimed
+longer ago than `STALE_AFTER_SECONDS` (15 minutes by default) belongs to a worker
+that is no longer coming back: it ran out of memory, its node was taken away, or
+it was scaled down mid-document. The reaper moves that task back to the front of
+the waiting queue so the next worker picks it up first. If a task has already
+used up its attempts, the reaper sends it to the dead letter queue instead, so a
+document that reliably crashes workers cannot loop forever.
+
+**The analogy:** the difference between a waiter taking your order and
+immediately tearing up the ticket, versus keeping it clipped to the rail until
+the food is actually served. If the waiter goes home mid-shift, the second
+arrangement means someone else can pick up the order.
+
+Because it is always running, the reaper is also the one that publishes the
+depth of each queue as a metric. The workers cannot do that reliably, since they
+are scaled to zero when there is no work.
+
+### Component 7: Observability
+
+**Where:** `k8s/*/observability/`
+
+Prometheus does not discover things by magic; it scrapes what it is told to. The
+`ServiceMonitor` objects tell it to scrape vLLM, the worker, the reaper, and the
+API. Without them, none of the application metrics exist, and the A100 scaling
+rule that watches vLLM's queue would silently never fire. That was the single
+most expensive flaw in the inherited system.
+
+A Grafana dashboard, **Visual Understanding System**, shows the queues, tasks per
+minute by outcome, vLLM's waiting and running requests, GPU utilisation, stage
+timings, replica counts, and rejected uploads. Five alerts fire when documents
+are failing permanently, when work is waiting but nothing completes, when claimed
+tasks stop finishing, when vLLM is missing while work waits, and when the model
+starts failing on many regions.
+
+Every component logs JSON, one object per line, with the `task_id` on every line
+that concerns a task, so one document can be followed across all of them.
 
 ---
 ## 5. The Life of a Single Document
@@ -905,13 +976,13 @@ Everything below runs on a laptop with Docker and Python. No GPU, no cloud
 account, no API key.
 
 ```bash
-# Python worker: 10 tests, plus 3 marked as known bugs that must fail until fixed
+# Python worker and reaper: 22 tests against a fake Redis
 cd realtime_consumer && pip install -r requirements-dev.txt && pytest -q
 
-# Rust API: 10 tests. The two that need Redis skip themselves if REDIS_URL is unset.
+# Rust API: 17 tests. The ones that need Redis skip themselves if REDIS_URL is unset.
 cd realtime_producer && cargo test
 
-# The built container, end to end: 21 checks
+# The built containers, end to end: 47 checks
 docker compose -f docker-compose.test.yml up --build -d
 python tests/integration/smoke.py
 docker compose -f docker-compose.test.yml down
@@ -928,12 +999,14 @@ end of that document to see what has been done and what is still to come.
 
 The most important things to know today:
 
-- The pipeline works end to end, and has a test suite.
-- It does not yet retry or recover work if a worker dies mid-task.
-- It does not yet report failures honestly: a failed document can be marked done
-  with empty output.
+- The pipeline works end to end and has a test suite that runs on every push.
+- Work survives a worker dying mid-task: claimed tasks are tracked, retried, and
+  recovered, and Redis keeps its state across restarts.
+- Failures are reported as failures, with the reason. `done` means done.
+- Every component publishes metrics, Prometheus is told to collect them, and the
+  A100 pool can now actually scale on demand.
 - The Model Context Protocol server that lets AI assistants use this as a tool is
-  planned but not yet built.
+  planned but not yet built. That is the next phase.
 
 Each of these has a phase assigned to it.
 

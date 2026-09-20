@@ -5,7 +5,7 @@ metadata:
   labels:
     app: ocr-api
 spec:
-  replicas: 1 # Lightweight Rust API on Redis node pool
+  replicas: 1
   selector:
     matchLabels:
       app: ocr-api
@@ -27,9 +27,28 @@ spec:
           imagePullPolicy: Always
           ports:
             - containerPort: 5000
+              name: http
           envFrom:
             - configMapRef:
                 name: ocr-pipeline-config
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ocr-redis-secret
+                  key: password
+          # /health says the process is up. /ready says Redis answers, which is
+          # the only thing the API needs to do its job.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            periodSeconds: 5
           resources:
             requests:
               cpu: "100m"

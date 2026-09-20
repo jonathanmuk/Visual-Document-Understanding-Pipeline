@@ -213,9 +213,25 @@ docker push ${AR_REGISTRY}/ocr-api-rust:latest
 # 3. Build and push Python Consumer Worker
 docker build -t ${AR_REGISTRY}/ocr-worker-rt:latest ./realtime_consumer
 docker push ${AR_REGISTRY}/ocr-worker-rt:latest
+
+# 4. Build and push the reaper (tiny, CPU only; recovers tasks whose worker died)
+docker build -t ${AR_REGISTRY}/ocr-reaper:latest -f realtime_consumer/Dockerfile.reaper ./realtime_consumer
+docker push ${AR_REGISTRY}/ocr-reaper:latest
 ```
 
 ---
+
+#### 3b. Create the Redis password
+
+Redis requires a password, and every component reads it from one Kubernetes
+Secret. Create it once, before deploying. Nothing in the repository contains it.
+
+```bash
+kubectl create secret generic ocr-redis-secret \
+  --from-literal=password="$(openssl rand -base64 24)"
+```
+
+To see it later: `kubectl get secret ocr-redis-secret -o jsonpath='{.data.password}' | base64 -d`.
 
 ### 4. Deploy the Full Stack on GKE
 
@@ -252,7 +268,52 @@ kubectl logs -l app=ocr-worker-rt --tail=100 -f
 
 # 3. vLLM Server (Inference Engine on A100 GPU)
 kubectl logs -l app=ocr-vlm --tail=100 -f
+
+# 4. Reaper (CPU pool) - task recovery
+kubectl logs -l app=ocr-reaper --tail=100 -f
 ```
+
+Logs are JSON, one object per line, with `task_id` on every line that concerns a
+task. `kubectl logs -l app=ocr-worker-rt | grep <task_id>` follows one document.
+
+#### Verify the reliability pieces
+
+```bash
+# The reaper is running on the CPU pool and publishing queue depths
+kubectl logs -l app=ocr-reaper --tail=20
+kubectl port-forward svc/ocr-reaper-metrics 9100:9100 &
+curl -s localhost:9100/metrics | grep vus_queue_depth
+
+# Redis is persistent and password-protected
+kubectl exec deploy/ocr-redis -- sh -c 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning config get appendonly'
+
+# Prometheus is scraping the four application targets (takes a minute after apply)
+kubectl exec -n monitoring prometheus-prometheus-kube-prometheus-prometheus-0 -- \\
+  promtool query instant http://localhost:9090 'up{job=~"ocr-.*"}'
+```
+
+The last query must list `ocr-api`, `ocr-reaper`, and, once they have scaled up,
+`ocr-worker` and `ocr-vlm`. If a target is missing, the ServiceMonitor for it is
+not being picked up; check `kubectl get servicemonitors` and the Prometheus
+operator logs.
+
+**Kill a worker mid-batch and watch the task survive.** This is the acceptance
+test for the reliability work:
+
+```bash
+# submit a document, then while it is processing:
+kubectl delete pod -l app=ocr-worker-rt
+# the task shows status "processing" until STALE_AFTER_SECONDS (default 900),
+# then the reaper requeues it and the next worker completes it. Check with:
+kubectl exec deploy/ocr-redis -- sh -c 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning lrange ocr_tasks:processing 0 -1'
+```
+
+#### Grafana
+
+The dashboard is installed automatically from the ConfigMap in
+`k8s/*/observability/`. Port-forward Grafana as described in the monitoring
+section below, sign in, and open **Visual Understanding System** under
+Dashboards.
 
 ---
 

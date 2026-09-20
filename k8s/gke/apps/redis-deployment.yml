@@ -1,3 +1,25 @@
+# Redis: the queue and the state store.
+#
+# Phase 2 changes: append-only persistence on a persistent disk, a password from
+# a Secret, and probes. The Secret must exist before this is applied:
+#
+#   kubectl create secret generic ocr-redis-secret \
+#     --from-literal=password="$(openssl rand -base64 24)"
+#
+# Durability posture: this is a durable queue and result cache, not a system of
+# record. Results expire (RESULT_TTL_SECONDS). If a document must never be lost,
+# it belongs in object storage as well, which is a Phase 6 decision.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -6,6 +28,10 @@ metadata:
     app: ocr-redis
 spec:
   replicas: 1
+  # A ReadWriteOnce disk can be attached to one pod at a time, so the old pod
+  # must stop before the new one starts.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: ocr-redis
@@ -24,8 +50,32 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
+          args:
+            - redis-server
+            - --appendonly
+            - "yes"
+            - --requirepass
+            - $(REDIS_PASSWORD)
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ocr-redis-secret
+                  key: password
           ports:
             - containerPort: 6379
+              name: redis
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+            periodSeconds: 5
           resources:
             requests:
               cpu: "1"
@@ -33,6 +83,10 @@ spec:
             limits:
               cpu: "2"
               memory: "8Gi"
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: redis-data-pvc
 ---
 apiVersion: v1
 kind: Service
@@ -45,4 +99,5 @@ spec:
     - protocol: TCP
       port: 6379
       targetPort: 6379
+      name: redis
   type: ClusterIP

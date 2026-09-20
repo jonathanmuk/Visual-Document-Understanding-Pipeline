@@ -1,0 +1,327 @@
+# Grafana dashboard. The kube-prometheus-stack Grafana sidecar loads any
+# ConfigMap carrying the grafana_dashboard label, in any namespace.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ocr-grafana-dashboard
+  namespace: default
+  labels:
+    grafana_dashboard: "1"
+data:
+  vus-overview.json: |
+    {
+      "title": "Visual Understanding System",
+      "uid": "vus-overview",
+      "schemaVersion": 39,
+      "version": 1,
+      "editable": true,
+      "refresh": "10s",
+      "time": {
+        "from": "now-1h",
+        "to": "now"
+      },
+      "tags": [
+        "vus"
+      ],
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Queue depth",
+          "gridPos": {
+            "x": 0,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "vus_queue_depth{queue=\"waiting\"}",
+              "legendFormat": "waiting",
+              "refId": "A"
+            },
+            {
+              "expr": "vus_queue_depth{queue=\"processing\"}",
+              "legendFormat": "in progress",
+              "refId": "B"
+            },
+            {
+              "expr": "vus_queue_depth{queue=\"dead\"}",
+              "legendFormat": "dead letter",
+              "refId": "C"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {}
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Tasks per minute by outcome",
+          "gridPos": {
+            "x": 12,
+            "y": 0,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "sum by (outcome) (rate(vus_tasks_total[5m])) * 60",
+              "legendFormat": "{{outcome}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {}
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "vLLM: requests waiting vs running",
+          "gridPos": {
+            "x": 0,
+            "y": 8,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "sum(vllm:num_requests_waiting)",
+              "legendFormat": "waiting",
+              "refId": "A"
+            },
+            {
+              "expr": "sum(vllm:num_requests_running)",
+              "legendFormat": "running",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {}
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "GPU utilisation (DCGM)",
+          "gridPos": {
+            "x": 12,
+            "y": 8,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "avg by (gpu, Hostname) (DCGM_FI_DEV_GPU_UTIL)",
+              "legendFormat": "{{Hostname}} gpu{{gpu}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent"
+            },
+            "overrides": []
+          },
+          "options": {}
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "Stage duration p50 / p95",
+          "gridPos": {
+            "x": 0,
+            "y": 16,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.5, sum by (le, stage) (rate(vus_stage_seconds_bucket[5m])))",
+              "legendFormat": "p50 {{stage}}",
+              "refId": "A"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(vus_stage_seconds_bucket[5m])))",
+              "legendFormat": "p95 {{stage}}",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s"
+            },
+            "overrides": []
+          },
+          "options": {}
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Replicas: worker and vLLM",
+          "gridPos": {
+            "x": 12,
+            "y": 16,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "kube_deployment_status_replicas_available{deployment=\"ocr-worker-rt-deployment\"}",
+              "legendFormat": "workers",
+              "refId": "A"
+            },
+            {
+              "expr": "kube_deployment_status_replicas_available{deployment=\"ocr-vlm-deployment\"}",
+              "legendFormat": "vLLM",
+              "refId": "B"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {}
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "API requests per second by status",
+          "gridPos": {
+            "x": 0,
+            "y": 24,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "sum by (status) (rate(vus_http_requests_total[5m]))",
+              "legendFormat": "{{status}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {}
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Uploads rejected per minute by reason",
+          "gridPos": {
+            "x": 12,
+            "y": 24,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "sum by (reason) (rate(vus_uploads_rejected_total[5m])) * 60",
+              "legendFormat": "{{reason}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {}
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Regions failing to transcribe (per 5m)",
+          "gridPos": {
+            "x": 0,
+            "y": 32,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "increase(vus_regions_failed_total[5m])",
+              "legendFormat": "failed regions",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {}
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Reaper actions (per 5m)",
+          "gridPos": {
+            "x": 12,
+            "y": 32,
+            "w": 12,
+            "h": 8
+          },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "targets": [
+            {
+              "expr": "sum by (action) (increase(vus_reaper_actions_total[5m]))",
+              "legendFormat": "{{action}}",
+              "refId": "A"
+            }
+          ],
+          "fieldConfig": {
+            "defaults": {},
+            "overrides": []
+          },
+          "options": {}
+        }
+      ]
+    }

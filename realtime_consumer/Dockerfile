@@ -19,11 +19,11 @@ RUN pip3 install --no-cache-dir \
     httpx \
     loguru \
     opencv-python-headless \
-    pdf2image PyMuPDF transformers==5.3.0
+    prometheus_client     pdf2image PyMuPDF transformers==5.3.0
 
 # 4. Copy configuration and Worker source code
 COPY config.yaml /app/config.yaml
-COPY worker.py /app/worker.py
+COPY vus_queue.py vus_metrics.py worker.py /app/
 
 ENV GLMOCR_CONFIG_PATH=/app/config.yaml
 

@@ -34,3 +34,12 @@ driver:
   enabled: true
 toolkit:
   enabled: true
+
+# GPU utilisation metrics for the dashboard. The exporter and its ServiceMonitor
+# are on by default in the chart; stated here so nobody has to wonder.
+dcgmExporter:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    additionalLabels:
+      release: prometheus

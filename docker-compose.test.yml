@@ -1,6 +1,10 @@
-# Brings up Redis and the Rust API for the container smoke test.
-# The worker is deliberately absent: this checks the built API image, the queue,
-# and the status round trip. Nothing here needs a GPU or an API key.
+# Brings up Redis (with a password and persistence, as in the cluster), the Rust
+# API, and the reaper, for the container smoke test. The worker is deliberately
+# absent: this checks the built images, the queue, and the status round trip.
+# Nothing here needs a GPU or an API key.
+#
+# Host ports are deliberately unusual (15000, 16379, 19100) so this stack never
+# collides with a Redis or API you may already be running on the standard ports.
 #
 #   docker compose -f docker-compose.test.yml up --build -d
 #   python tests/integration/smoke.py
@@ -9,10 +13,11 @@
 services:
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "smoke-test-password"]
     ports:
-      - "6379:6379"
+      - "16379:6379"
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "smoke-test-password", "--no-auth-warning", "ping"]
       interval: 2s
       timeout: 2s
       retries: 15
@@ -22,8 +27,27 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      REDIS_PASSWORD: smoke-test-password
+      LOG_FORMAT: json
     ports:
-      - "5000:5000"
+      - "15000:5000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  reaper:
+    build:
+      context: ./realtime_consumer
+      dockerfile: Dockerfile.reaper
+    environment:
+      REDIS_HOST: redis
+      REDIS_PASSWORD: smoke-test-password
+      REAPER_INTERVAL_SECONDS: "2"
+      STALE_AFTER_SECONDS: "3"
+      MAX_ATTEMPTS: "3"
+      LOG_FORMAT: json
+    ports:
+      - "19100:9100"
     depends_on:
       redis:
         condition: service_healthy

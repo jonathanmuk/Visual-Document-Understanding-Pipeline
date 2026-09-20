@@ -33,9 +33,31 @@ spec:
         - name: ocr-worker-rt-python
           image: ocr-worker-rt  # registry set in kustomization.yml
           imagePullPolicy: Always
+          ports:
+            - containerPort: 9100
+              name: metrics
           envFrom:
             - configMapRef:
                 name: ocr-pipeline-config
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ocr-redis-secret
+                  key: password
+          # The worker has no HTTP server for health. It touches a heartbeat file
+          # every 5 seconds from its event loop, which keeps running during a long
+          # parse. A heartbeat older than a minute means the process is stuck.
+          startupProbe:
+            exec:
+              command: ["sh", "-c", "test -n \"$(find /tmp/worker-heartbeat -mmin -1 2>/dev/null)\""]
+            periodSeconds: 10
+            failureThreshold: 30   # up to 5 minutes to load the SDK and layout model
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "test -n \"$(find /tmp/worker-heartbeat -mmin -1 2>/dev/null)\""]
+            periodSeconds: 30
+            failureThreshold: 3
           resources:
             requests:
               cpu: "2"
@@ -51,3 +73,18 @@ spec:
             - name: model-weights
               mountPath: "/mnt/models"
               readOnly: true
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocr-worker-metrics
+  labels:
+    app: ocr-worker-rt
+spec:
+  selector:
+    app: ocr-worker-rt
+  ports:
+    - name: metrics
+      port: 9100
+      targetPort: metrics
+  type: ClusterIP

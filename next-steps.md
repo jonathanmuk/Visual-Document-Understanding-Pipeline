@@ -228,9 +228,12 @@ python tests/integration/smoke.py
 docker compose -f docker-compose.test.yml down
 ```
 
-`smoke.py` runs 21 checks and prints one line per check. If every line says
-`ok`, Track 0 is done and you can skip to Track 1. The manual steps below are
-still worth reading once, because they show you what the automation is checking.
+`smoke.py` runs 47 checks and prints one line per check. If every line says
+`ok`, Track 0 is done and you can skip to Track 1. It starts Redis (with a
+password and persistence, as in the cluster), the API, and the reaper, on the
+unusual host ports 15000, 16379, and 19100 so it never collides with anything
+else on your machine. The manual steps below are still worth reading once,
+because they show you what the automation is checking.
 
 ### 5.1 Start Redis
 
@@ -547,17 +550,20 @@ curl.exe -s -X POST http://localhost:5000/process -F "file=@C:\test\sample.pdf"
 
 Either way you get back a `task_id`.
 
-**Confirm the file really arrived, before you wait on anything else.** This takes
-five seconds and catches the missing `@` immediately:
+**If you forget the `@`, the API now tells you.** Since Phase 2 a text value in
+the `file` field is rejected with HTTP 400 and the message
+`the 'file' field must be a file upload, not text (with curl, use file=@path)`.
+Nothing is queued. Likewise a file that is not a PDF, PNG, or JPEG gets HTTP 415,
+and an empty file gets 400. Only a real document ever reaches the queue.
+
+You can still confirm what was stored:
 
 ```bash
-docker exec vus-redis redis-cli HGET task:<task_id> filename
+docker exec vus-redis redis-cli HGET task:<task_id> extension
 ```
 
-| What it prints | What it means |
-| :--- | :--- |
-| Your real filename, such as `sample.pdf` | The file was uploaded. Carry on. |
-| `unknown.pdf` | **No file was uploaded.** The API only uses that name when the request had no file attached. Check for the missing `@` and submit again. |
+That prints `pdf`, `png`, or `jpg`, decided from the file's content rather than
+its name, which is what the worker needs to be right.
 
 Then watch the worker process it:
 
@@ -570,13 +576,16 @@ worker.
 
 ### 6.5 Check whether it genuinely worked
 
-**Warning: `status: "done"` does not mean it worked.** This is a real bug in the
-current worker, found by exactly this test. When the cloud API refuses a request,
-the SDK records the failure quietly instead of raising an error, and the worker
-does not check for it. The task gets marked `done` with empty output and no error
-message. It is logged as gap 20 in the implementation plan and fixed in Phase 2.
+**Since Phase 2, `done` means done.** The worker now checks every result before
+recording it. A refused cloud request, an empty result, or a missing result is
+recorded as `failed` with the real reason in the `error` field, and the task
+goes to the dead letter queue. A retryable failure is put back on the queue up to
+`MAX_ATTEMPTS` times first, and `attempts` in the status response shows how many
+tries it took. A document that came back with some regions missing is still
+`done`, but carries a `warning` explaining how many regions were lost.
 
-Until then, check three things yourself.
+So the status response tells you the truth. Still worth looking at what came
+back:
 
 **1. Read the result:**
 
@@ -591,8 +600,10 @@ Note there is nothing after `json.tool`. A stray character there, such as
 
 | What you see | What it means |
 | :--- | :--- |
-| `"markdown"` contains real text from your document | **It worked.** |
-| `"markdown": ""` and `"layout": []` | **It failed**, despite saying `done`. Go to step 3. |
+| `status: "done"` and `"markdown"` contains real text | **It worked.** |
+| `status: "done"` with a `"warning"` | It worked, but some regions could not be transcribed. The text is there; parts may be missing. |
+| `status: "failed"` with an `"error"` | It did not work, and the error says why. Section 12 explains the common ones. |
+| `status: "queued"` with `attempts` above 0 | A retryable failure happened and the task is waiting for another go. |
 
 **3. Look for `[ERROR]` lines in the worker log.** Run this in Git Bash, since
 `grep` does not exist in PowerShell:
@@ -1377,14 +1388,15 @@ optional polish. It is the brake. Do not leave the system reachable without it.
 
 These are the ones you meet first, in roughly the order you meet them.
 
-**The task says `done` but the markdown is empty.** The work failed and the
-worker reported success anyway. This is gap 20, a real bug. Look at the worker
-log for the actual reason, using the `grep` command in section 6.5. Every entry
-below starts from there.
+**The task says `failed`.** Read the `error` field in the status response; it
+holds the real reason. Every entry below matches one of those messages.
 
-**The filename in Redis is `unknown.pdf`.** Your document was never uploaded. The
-curl command was missing the `@` before the path, so it sent the path as text
-instead of sending the file. See section 6.4.
+**HTTP 400: `the 'file' field must be a file upload, not text`.** The curl
+command was missing the `@` before the path, so it sent the path as text instead
+of sending the file. See section 6.4.
+
+**HTTP 415: `unsupported file type`.** The content is not a PDF, PNG, or JPEG,
+whatever the filename says. The API checks the first bytes of the file.
 
 **Error code `1113`, with the message `余额不足或无可用资源包,请充值。`** The
 message is Chinese and means "insufficient balance or no available resource

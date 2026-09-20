@@ -1,0 +1,70 @@
+# Tells Prometheus what to scrape. Without these, none of the application
+# metrics exist and the A100 autoscaler has nothing to read (gap 14).
+#
+# The kube-prometheus-stack chart installs the ServiceMonitor CRD. Apply after
+# the chart, as the deployment guide orders it. The "release: prometheus" label
+# matches the chart's default selector when it is installed as release
+# "prometheus"; the guide also disables the selector so any label would do.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ocr-vlm
+  namespace: default
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: ocr-vlm
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 10s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ocr-worker
+  namespace: default
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: ocr-worker-rt
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ocr-reaper
+  namespace: default
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: ocr-reaper
+  endpoints:
+    - port: metrics
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: ocr-api
+  namespace: default
+  labels:
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      app: ocr-api
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 15s

@@ -1,0 +1,55 @@
+# Alerts that mean a person should look. Delivered through whatever Alertmanager
+# receivers the kube-prometheus-stack is configured with.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ocr-pipeline-alerts
+  namespace: default
+  labels:
+    release: prometheus
+spec:
+  groups:
+    - name: ocr-pipeline
+      rules:
+        - alert: DeadLetterQueueGrowing
+          expr: increase(vus_reaper_actions_total{action="dead_lettered"}[15m]) > 0
+            or increase(vus_tasks_total{outcome="failed"}[15m]) > 0
+          for: 0m
+          labels:
+            severity: warning
+          annotations:
+            summary: Documents are failing permanently
+            description: Tasks reached the dead letter queue in the last 15 minutes. Inspect with LRANGE ocr_tasks:dead 0 -1.
+        - alert: QueueNotDraining
+          expr: vus_queue_depth{queue="waiting"} > 0
+            and rate(vus_tasks_total[15m]) == 0
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: Work is waiting but nothing is completing
+            description: The waiting queue has had tasks for 15 minutes with no completions. Check that workers are running and can reach vLLM.
+        - alert: WorkersStuckInProgress
+          expr: vus_queue_depth{queue="processing"} > 0
+            and rate(vus_tasks_total[20m]) == 0
+          for: 20m
+          labels:
+            severity: warning
+          annotations:
+            summary: Tasks claimed but not finishing
+            description: The reaper will requeue these after STALE_AFTER_SECONDS. If this repeats, the workers may be hung or vLLM unreachable.
+        - alert: VLLMDown
+          expr: absent(up{job=~".*ocr-vlm.*"} == 1) and vus_queue_depth{queue="waiting"} > 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: vLLM is not being scraped while work is waiting
+            description: Either the A100 pool failed to scale up, or the vLLM pod is not ready.
+        - alert: RegionsFailingToTranscribe
+          expr: increase(vus_regions_failed_total[30m]) > 10
+          labels:
+            severity: warning
+          annotations:
+            summary: The model is failing on many regions
+            description: More than 10 regions in 30 minutes came back empty from vLLM. Output is being delivered with warnings. Check vLLM logs.
