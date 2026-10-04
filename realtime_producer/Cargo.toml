@@ -21,6 +21,6 @@ prometheus = { version = "0.13", default-features = false }
 once_cell = "1"
 
 [dev-dependencies]
-tower = { version = "0.4", features = ["util"] }
+tower = { version = "0.5", features = ["util"] }
 # Only body::to_bytes is used. "full" would enable HTTP/2 and pull in h2.
 hyper = "0.14"
