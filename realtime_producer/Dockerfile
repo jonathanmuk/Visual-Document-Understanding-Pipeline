@@ -17,7 +17,7 @@ COPY . .
 RUN cargo build --release
 
 # --- Stage 4: Final Image ---
-FROM alpine:3.20
+FROM alpine:3.24
 RUN apk add --no-cache libgcc \
     && adduser -D -H -u 10001 -s /sbin/nologin vdu
 WORKDIR /app
