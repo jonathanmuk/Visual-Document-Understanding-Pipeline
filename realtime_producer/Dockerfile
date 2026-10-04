@@ -1,5 +1,5 @@
 # --- Stage 1: Build Recipe ---
-FROM rust:1.88-alpine as chef
+FROM rust:1.98-alpine as chef
 RUN apk add --no-cache musl-dev
 WORKDIR /app
 RUN cargo install cargo-chef --locked
