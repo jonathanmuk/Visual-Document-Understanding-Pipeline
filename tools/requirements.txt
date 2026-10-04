@@ -3,4 +3,4 @@ redis>=5.0
 mcp>=2.2.0,<3
 # The demo worker runs the same pre-flight document check as the real worker.
 pypdfium2>=5.6
-pillow>=10.1
+pillow>=12.3.0
