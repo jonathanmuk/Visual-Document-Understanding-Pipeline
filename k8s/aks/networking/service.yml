@@ -3,9 +3,16 @@ kind: Service
 metadata:
   name: ocr-api-service
   namespace: default
+  # The ServiceMonitor in observability/ finds this Service by this label.
+  labels:
+    app: ocr-api
   annotations:
     service.beta.kubernetes.io/azure-load-balancer-internal: "true"
 spec:
+  # Only the API gateway's subnet should reach this load balancer. Uncomment and
+  # set it to your gateway subnet (see the deployment guide, section 12).
+  # loadBalancerSourceRanges:
+  #   - 10.1.0.0/24
   selector:
     app: ocr-api
   ports:

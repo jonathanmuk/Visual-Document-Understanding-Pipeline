@@ -85,9 +85,9 @@ spec:
         name: ocr-redis-auth
     # 3. Scale beyond one when vLLM has requests waiting for a slot.
     #    Requires the ServiceMonitor in observability/ so the metric exists.
-    #    The label is "namespace" (what the Prometheus Operator attaches), not
-    #    the "kubernetes_namespace" the inherited manifest queried, which never
-    #    matched anything. ignoreNullValues treats "no vLLM yet" as zero rather
+    #    The label is "namespace", which the Prometheus Operator attaches;
+    #    "kubernetes_namespace" would never match anything. ignoreNullValues
+    #    treats "no vLLM yet" as zero rather
     #    than an error.
     - type: prometheus
       metadata:
@@ -107,7 +107,9 @@ spec:
   minReplicaCount: 1
   maxReplicaCount: 5
   triggers:
+    # metricType sits on the trigger. The older metadata.type setting was
+    # removed in KEDA 2.18.
     - type: cpu
+      metricType: Utilization
       metadata:
-        type: Utilization
         value: "70"

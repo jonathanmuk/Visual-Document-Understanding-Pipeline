@@ -180,4 +180,15 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Your Z.ai key for the real worker in Z.ai mode
 realtime_consumer/config.local.yaml
+# Filled-in API gateway policy (docs/aks_deployment.md, section 12d)
+apim-policy.local.*
+
+# Local notes, kept out of the repository
+implementation-plan.md
+CHANGELOG.md
+SECURITY.md
+
+# Results written by tools/benchmark.py, tools/throughput.py and tools/evaluate.py
+benchmarks/

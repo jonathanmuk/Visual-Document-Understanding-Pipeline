@@ -5,10 +5,12 @@ resources:
   - apps/deployment-api.yml
   - apps/deployment-worker.yml
   - apps/deployment-reaper.yml
+  - apps/deployment-mcp.yml
   - apps/deployment-vlm.yml
   - apps/redis-deployment.yml
   - apps/keda-scaler.yml
   - networking/service.yml
+  - networking/network-policies.yml
   - observability/servicemonitors.yml
   - observability/alerts.yml
   - observability/grafana-dashboard.yml
@@ -18,7 +20,7 @@ labels:
   - includeSelectors: true
     pairs:
       managed-by: kustomize
-      system: visual-understanding-system
+      system: visual-document-understanding
 
 # Container registry. Change this one block to point at your own registry.
 # The manifests use bare image names; Kustomize rewrites them at build time.
@@ -32,6 +34,9 @@ images:
   - name: ocr-reaper
     newName: <YOUR_ACR_NAME>.azurecr.io/ocr-reaper
     newTag: latest
+  - name: ocr-mcp
+    newName: <YOUR_ACR_NAME>.azurecr.io/ocr-mcp
+    newTag: latest
   - name: ocr-vlm-qwen
     newName: <YOUR_ACR_NAME>.azurecr.io/ocr-vlm-qwen
     newTag: latest
@@ -42,7 +47,6 @@ configMapGenerator:
     literals:
       # --- Global Config ---
       - REDIS_HOST=ocr-redis-service
-      - VLLM_URL=http://ocr-vlm-service:8000/v1/chat/completions
       # --- Worker Config ---
       - MAX_BATCH_SIZE=4
       - BATCH_WINDOW_MS=100
@@ -53,8 +57,18 @@ configMapGenerator:
       - REAPER_INTERVAL_SECONDS=30
       - METRICS_PORT=9100
       - LOG_FORMAT=json
-      - GLMOCR_PIPELINE_OCR_API_API_HOST=ocr-vlm-service
-      - GLMOCR_PIPELINE_OCR_API_API_PORT=8000
+      # --- Documents and results (API and worker must agree on these) ---
+      - VDU_PROFILE=default
+      - PIPELINE_VERSION=1
+      - RESULT_CACHE=true
+      - TASK_MAX_AGE_SECONDS=172800
+      - MAX_PDF_PAGES=200
+      # --- Callbacks: empty means off. Comma-separated hosts, *.example.com allowed ---
+      - CALLBACK_ALLOWED_HOSTS=
+      # --- Where the worker sends cropped regions. Read by the OCR SDK, which
+      #     takes these names (GLMOCR_OCR_API_*) over the address in config.yaml ---
+      - GLMOCR_OCR_API_HOST=ocr-vlm-service
+      - GLMOCR_OCR_API_PORT=8000
       # --- vLLM Server Config ---
       - SERVED_NAME=Qwen/Qwen3.5-4B
       - PORT=8000

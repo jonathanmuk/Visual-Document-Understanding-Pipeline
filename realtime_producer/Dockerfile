@@ -18,9 +18,12 @@ RUN cargo build --release
 
 # --- Stage 4: Final Image ---
 FROM alpine:3.20
-RUN apk add --no-cache libgcc
+RUN apk add --no-cache libgcc \
+    && adduser -D -H -u 10001 -s /sbin/nologin vdu
 WORKDIR /app
 COPY --from=builder /app/target/release/ocr-producer-rust /app/producer
+# An unprivileged user. The API writes nothing to disk.
+USER 10001
 EXPOSE 5000
 CMD ["/app/producer"]
 

@@ -1,3 +1,10 @@
+# Downloads the model weights once, onto the shared volume.
+#
+# The one container in these manifests that runs as root, deliberately: it is a
+# one-off job, not a serving container, and on GKE the Filestore share it writes
+# to is owned by root, so an unprivileged user could not write the weights.
+# It still cannot gain further privileges, and has no Kubernetes API token.
+# Delete the job once it reports "Ingestion complete".
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -8,9 +15,15 @@ spec:
   template:
     spec:
       restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: ingestor
           image: python:3.11-slim
+          securityContext:
+            allowPrivilegeEscalation: false
           resources:
             requests:
               cpu: "1"
@@ -27,8 +40,15 @@ spec:
               value: "/hf-cache"
             - name: HF_HUB_CACHE
               value: "/hf-cache/hub"
+            # Only needed for gated or private models. Create it with:
+            #   kubectl create secret generic hf-token-secret --from-literal=token=<your token>
+            # optional: true lets the job run without it for public models.
             - name: HF_TOKEN
-              value: "" # User should provide this if needed for private models
+              valueFrom:
+                secretKeyRef:
+                  name: hf-token-secret
+                  key: token
+                  optional: true
           command: ["python3", "-c"]
           args:
             - |
@@ -36,9 +56,8 @@ spec:
 
               models = os.getenv("MODELS").split(",")
               token = os.getenv("HF_TOKEN")
+              # Certificates are checked, so the weights cannot be swapped in transit.
               ctx = ssl.create_default_context()
-              ctx.check_hostname = False
-              ctx.verify_mode = ssl.CERT_NONE
 
               for model_id in models:
                   safe_id = model_id.replace("/", "__")

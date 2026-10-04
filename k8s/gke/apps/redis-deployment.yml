@@ -1,14 +1,14 @@
 # Redis: the queue and the state store.
 #
-# Phase 2 changes: append-only persistence on a persistent disk, a password from
-# a Secret, and probes. The Secret must exist before this is applied:
+# Append-only persistence on a persistent disk, a password from a Secret, and
+# probes. The Secret must exist before this is applied:
 #
 #   kubectl create secret generic ocr-redis-secret \
 #     --from-literal=password="$(openssl rand -base64 24)"
 #
 # Durability posture: this is a durable queue and result cache, not a system of
 # record. Results expire (RESULT_TTL_SECONDS). If a document must never be lost,
-# it belongs in object storage as well, which is a Phase 6 decision.
+# it belongs in object storage as well (docs/adr/0005-no-object-storage-yet.md).
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -40,6 +40,16 @@ spec:
       labels:
         app: ocr-redis
     spec:
+      automountServiceAccountToken: false
+      # The redis image's own user (999) and group (1000). fsGroup makes the disk
+      # writable by that group.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       nodeSelector:
         app: redis-store
       tolerations:
@@ -50,6 +60,11 @@ spec:
       containers:
         - name: redis
           image: redis:7-alpine
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           args:
             - redis-server
             - --appendonly

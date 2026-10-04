@@ -7,7 +7,8 @@ older. This loop looks for those and either sends them back to the waiting queue
 or, once they have used up their attempts, to the dead letter queue.
 
 It also publishes the depth of every queue as metrics, because it is the one
-process guaranteed to be running when the workers are scaled to zero.
+process guaranteed to be running when the workers are scaled to zero, and it
+delivers webhook callbacks (see vdu_webhook) for the same reason.
 """
 import os
 import sys
@@ -15,8 +16,9 @@ import time
 
 from loguru import logger
 
-import vus_metrics
-import vus_queue as q
+import vdu_metrics
+import vdu_queue as q
+import vdu_webhook
 
 
 class Settings:
@@ -64,8 +66,8 @@ def sweep(r, settings, now=None):
 
     for action, n in actions.items():
         if action != "healthy" and n:
-            vus_metrics.REAPER_ACTIONS_TOTAL.labels(action=action).inc(n)
-    vus_metrics.record_depths(q.depths(r))
+            vdu_metrics.REAPER_ACTIONS_TOTAL.labels(action=action).inc(n)
+    vdu_metrics.record_depths(q.depths(r))
     return actions
 
 
@@ -74,11 +76,12 @@ def main():
     logger.add(sys.stderr, serialize=os.getenv("LOG_FORMAT", "text").lower() == "json")
     settings = Settings()
     r = q.make_redis()
-    port = vus_metrics.serve()
+    port = vdu_metrics.serve()
     logger.info(
         f"Reaper started (every {settings.interval_seconds}s, stale after {settings.stale_after_seconds}s, "
         f"max attempts {settings.max_attempts}). Metrics on :{port}/metrics"
     )
+    vdu_webhook.start(r, vdu_webhook.Settings())
     while True:
         try:
             summary = sweep(r, settings)

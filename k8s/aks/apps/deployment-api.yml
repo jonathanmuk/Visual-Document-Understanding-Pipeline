@@ -14,6 +14,14 @@ spec:
       labels:
         app: ocr-api
     spec:
+      # No Kubernetes API access is needed, so no service account token is mounted.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       nodeSelector:
         app: api-gateway
       tolerations:
@@ -25,6 +33,11 @@ spec:
         - name: ocr-api-rust
           image: ocr-api-rust  # registry set in kustomization.yml
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 5000
               name: http

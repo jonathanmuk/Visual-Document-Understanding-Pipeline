@@ -1,5 +1,7 @@
 # Tells Prometheus what to scrape. Without these, none of the application
-# metrics exist and the A100 autoscaler has nothing to read (gap 14).
+# metrics exist and the A100 autoscaler has nothing to read. A ServiceMonitor
+# finds Services by the Service's own labels, so each Service it watches carries
+# an "app" label.
 #
 # The kube-prometheus-stack chart installs the ServiceMonitor CRD. Apply after
 # the chart, as the deployment guide orders it. The "release: prometheus" label

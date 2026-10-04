@@ -1,19 +1,44 @@
 # Brings up Redis (with a password and persistence, as in the cluster), the Rust
-# API, and the reaper, for the container smoke test. The worker is deliberately
-# absent: this checks the built images, the queue, and the status round trip.
-# Nothing here needs a GPU or an API key.
+# API, the reaper, the MCP server, and a small webhook receiver, for the container
+# smoke test. Nothing here needs a GPU or an API key.
 #
-# Host ports are deliberately unusual (15000, 16379, 19100) so this stack never
-# collides with a Redis or API you may already be running on the standard ports.
+# The real worker is not started by default. With a Z.ai API key in
+# realtime_consumer/config.local.yaml it can be added with the "maas" profile,
+# and it then reads documents for real through Z.ai's service. The smoke test
+# expects no worker to be running.
+#
+# Every container runs as a non-root user, with a read-only filesystem, no Linux
+# capabilities, and no way to gain privileges, as in the cluster.
+#
+# The fixed project name keeps container names the same whatever the folder
+# is called, for example visual_document_understanding-redis-1.
+
+name: visual_document_understanding
+#
+# Host ports are deliberately unusual (15000, 16379, 19100, 18080, 19000) so this
+# stack never collides with a Redis or API you may already be running.
 #
 #   docker compose -f docker-compose.test.yml up --build -d
 #   python tests/integration/smoke.py
 #   docker compose -f docker-compose.test.yml down
+#
+#   docker compose -f docker-compose.test.yml --profile maas up --build -d worker
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
 
 services:
   redis:
+    <<: *hardened
     image: redis:7-alpine
+    # The image's own redis user and group. Running as it directly skips the
+    # entrypoint's switch from root.
+    user: "999:1000"
     command: ["redis-server", "--appendonly", "yes", "--requirepass", "smoke-test-password"]
+    volumes:
+      - redis-data:/data
     ports:
       - "16379:6379"
     healthcheck:
@@ -23,12 +48,18 @@ services:
       retries: 15
 
   api:
+    <<: *hardened
     build: ./realtime_producer
     environment:
       REDIS_HOST: redis
       REDIS_PORT: "6379"
       REDIS_PASSWORD: smoke-test-password
       LOG_FORMAT: json
+      # Part of the result cache key; must match the worker's.
+      VDU_PROFILE: ${VDU_PROFILE:-default}
+      # Callbacks may go to the receiver below, or to one on your own machine.
+      CALLBACK_ALLOWED_HOSTS: webhook-receiver,host.docker.internal
+      CALLBACK_ALLOW_HTTP: "1"
     ports:
       - "15000:5000"
     depends_on:
@@ -36,6 +67,7 @@ services:
         condition: service_healthy
 
   reaper:
+    <<: *hardened
     build:
       context: ./realtime_consumer
       dockerfile: Dockerfile.reaper
@@ -43,11 +75,71 @@ services:
       REDIS_HOST: redis
       REDIS_PASSWORD: smoke-test-password
       REAPER_INTERVAL_SECONDS: "2"
-      STALE_AFTER_SECONDS: "3"
+      # Long enough that a real document is never reclaimed mid-processing.
+      # The smoke test fabricates an hour-old claim rather than relying on a
+      # short threshold, so reaping is still observable in seconds.
+      STALE_AFTER_SECONDS: "120"
       MAX_ATTEMPTS: "3"
       LOG_FORMAT: json
+      CALLBACK_ALLOWED_HOSTS: webhook-receiver,host.docker.internal
+      CALLBACK_ALLOW_HTTP: "1"
+      WEBHOOK_SECRET: smoke-webhook-secret
+      WEBHOOK_BACKOFF_SECONDS: "1"
     ports:
       - "19100:9100"
     depends_on:
       redis:
         condition: service_healthy
+
+  mcp:
+    <<: *hardened
+    build: ./mcp_server
+    environment:
+      VDU_API_URL: http://api:5000
+      MCP_BEARER_TOKENS: smoke-test-token
+      VDU_ALLOWED_DIRS: /fixtures
+      LOG_FORMAT: json
+    volumes:
+      - ./tests/fixtures:/fixtures:ro
+    ports:
+      - "18080:8080"
+    depends_on:
+      - api
+
+  # Plays the client's application: receives callbacks and checks signatures.
+  webhook-receiver:
+    <<: *hardened
+    image: python:3.12-slim
+    user: "10001:10001"
+    command: ["python", "/tools/webhook_receiver.py"]
+    environment:
+      WEBHOOK_SECRET: smoke-webhook-secret
+      WEBHOOK_PORT: "9000"
+    volumes:
+      - ./tools/webhook_receiver.py:/tools/webhook_receiver.py:ro
+    ports:
+      - "19000:9000"
+
+  # The real worker in Z.ai mode. Not started unless asked for with --profile maas.
+  worker:
+    <<: *hardened
+    profiles: ["maas"]
+    build: ./realtime_consumer
+    image: vdu-worker:local
+    environment:
+      REDIS_HOST: redis
+      REDIS_PASSWORD: smoke-test-password
+      GLMOCR_CONFIG_PATH: /config/config.local.yaml
+      MAX_ATTEMPTS: "3"
+      VDU_PROFILE: ${VDU_PROFILE:-default}
+    volumes:
+      - ./realtime_consumer/config.local.yaml:/config/config.local.yaml:ro
+    tmpfs:
+      - /tmp
+    shm_size: "2gb"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis-data:

@@ -1,7 +1,7 @@
 # Setting Up Your Azure Account
 
 This is the very first step: creating an Azure account and getting
-the CLI installed. Azure is our primary cloud for the SLM-OCR pipeline. Once
+the CLI installed. Azure is the primary cloud for this pipeline. Once
 this is done, move on to `azure_gpu_prereqs.md` to get GPU access and build the
 cluster.
 
@@ -108,4 +108,3 @@ az aks install-cli
 Your account exists and the CLI works. Now head to **`azure_gpu_prereqs.md`** to
 upgrade to Pay-As-You-Go, request GPU quota, verify availability, and confirm
 capacity. Then move on to **`aks_deployment.md`** to build the AKS cluster.
-</content>

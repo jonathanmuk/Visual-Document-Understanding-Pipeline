@@ -1,0 +1,29 @@
+# Weekly pull requests for dependency updates, including security fixes.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /realtime_producer
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: pip
+    directories:
+      - /realtime_consumer
+      - /mcp_server
+      - /tools
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directories:
+      - /realtime_producer
+      - /realtime_consumer
+      - /mcp_server
+      - /server
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

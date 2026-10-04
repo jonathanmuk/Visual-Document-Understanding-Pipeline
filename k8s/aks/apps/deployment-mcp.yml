@@ -1,0 +1,110 @@
+# The MCP server: the front door for AI assistants. It only ever talks to the
+# Rust API, so it runs on the cheap CPU pool with no access to Redis or the GPUs.
+#
+# It requires a bearer token, read from a Secret that must exist before apply:
+#
+#   kubectl create secret generic ocr-mcp-secret \
+#     --from-literal=tokens="$(openssl rand -base64 32)"
+#
+# The value may hold several tokens separated by commas. To rotate: add the new
+# token, move clients to it, then remove the old one.
+#
+# Local file paths are meaningless on a remote server, so assistants should pass
+# http(s) URLs. VDU_ALLOWED_DIRS is left at its default (an empty working
+# directory), which makes every local path invalid by construction.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ocr-mcp-deployment
+  labels:
+    app: ocr-mcp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ocr-mcp
+  template:
+    metadata:
+      labels:
+        app: ocr-mcp
+    spec:
+      # No Kubernetes API access is needed, so no service account token is mounted.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      nodeSelector:
+        app: api-gateway
+      tolerations:
+        - key: "sku"
+          operator: "Equal"
+          value: "api"
+          effect: "NoSchedule"
+      containers:
+        - name: ocr-mcp
+          image: ocr-mcp  # registry set in kustomization.yml
+          imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: VDU_API_URL
+              value: http://ocr-api-service
+            - name: MCP_BEARER_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: ocr-mcp-secret
+                  key: tokens
+            - name: LOG_FORMAT
+              value: json
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+---
+# Reachable only inside the cluster network. Expose it to assistants the same way
+# the REST API is exposed: through the internal load balancer below and the API
+# gateway, never a public IP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ocr-mcp-service
+  namespace: default
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+spec:
+  # Limit who can reach this load balancer. The gateway publishes only the REST
+  # API, not this server, so set this to the address ranges your team connects
+  # from (a VPN's range, for example), not to the gateway's subnet. See the
+  # deployment guide's section 12.
+  # loadBalancerSourceRanges:
+  #   - 10.1.0.0/24
+  selector:
+    app: ocr-mcp
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: http
+      name: http
+  type: LoadBalancer

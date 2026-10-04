@@ -1,16 +1,18 @@
 import asyncio
-import base64
 import json
 import logging
 import os
 import sys
+import tempfile
 import threading
 import time
 
 from loguru import logger
 
-import vus_metrics
-import vus_queue as q
+import vdu_inspect
+import vdu_metrics
+import vdu_profiles
+import vdu_queue as q
 
 DEFAULT_SHM_DIR = "/dev/shm"
 DEFAULT_HEARTBEAT_PATH = "/tmp/worker-heartbeat"
@@ -24,6 +26,7 @@ class Settings:
         self.result_ttl_seconds = int(os.getenv("RESULT_TTL_SECONDS", "86400"))
         self.shm_dir = os.getenv("SHM_DIR", DEFAULT_SHM_DIR)
         self.heartbeat_path = os.getenv("HEARTBEAT_PATH", DEFAULT_HEARTBEAT_PATH)
+        self.limits = vdu_inspect.Limits()
 
 
 def configure_logging():
@@ -34,11 +37,30 @@ def configure_logging():
         logger.add(sys.stderr)
 
 
-def make_engine():
+def make_engine(config_path):
     # Imported here so the module can be loaded, and tested, without the SDK.
     from glmocr import GlmOcr
-    config_path = os.getenv("GLMOCR_CONFIG_PATH", "config.yaml")
     return GlmOcr(config_path=config_path, enable_layout=True)
+
+
+def prepare_config():
+    """Apply the chosen profile to the base config and check the result.
+
+    Refuses to start on a config that would silently drop a kind of region or
+    send a region to the model with no instruction.
+    """
+    base = os.getenv("GLMOCR_CONFIG_PATH", "config.yaml")
+    profile = os.getenv("VDU_PROFILE", "default")
+    path, data = vdu_profiles.resolve(base, profile, vdu_profiles.PROFILES_DIR, tempfile.gettempdir())
+    problems = vdu_profiles.check(data)
+    if problems:
+        raise SystemExit(f"config for profile '{profile}' is not usable: " + "; ".join(problems))
+    maas = bool(((data.get("pipeline") or {}).get("maas") or {}).get("enabled"))
+    if maas and profile != "default":
+        logger.warning(f"Profile '{profile}' changes prompts and region rules, which Z.ai mode ignores; "
+                       "it only takes effect in self-hosted mode")
+    logger.info(f"Using profile '{profile}' ({path}), {'Z.ai' if maas else 'self-hosted'} mode")
+    return path
 
 
 class FailedRegionCounter(logging.Handler):
@@ -126,14 +148,30 @@ async def process_batch(r, engine, task_ids, settings):
                     # Nothing to process and nothing to report to. Drop the claim.
                     logger.bind(task_id=task_id).error("Task data not found in Redis; removing claim")
                     r.lrem(q.PROCESSING_KEY, 0, task_id)
-                    vus_metrics.TASKS_TOTAL.labels(outcome="orphan").inc()
+                    vdu_metrics.TASKS_TOTAL.labels(outcome="orphan").inc()
                     continue
 
                 attempts = q.mark_claimed(r, task_id)
+                log = logger.bind(task_id=task_id, attempt=attempts)
+
+                file_bytes = q.read_document(r, task_id, task_data)
+                if file_bytes is None:
+                    q.finish_failed(r, task_id, "the document is no longer stored; it expired before a "
+                                    "worker reached it, so please submit it again", settings.result_ttl_seconds)
+                    vdu_metrics.TASKS_TOTAL.labels(outcome="expired").inc()
+                    log.error("Task failed: document expired before processing")
+                    continue
+
+                ext = task_data.get("extension", "jpg")
+                # A bad document fails here, alone, instead of inside the batch.
+                problem = vdu_inspect.inspect(file_bytes, ext, settings.limits)
+                if problem:
+                    q.finish_failed(r, task_id, problem, settings.result_ttl_seconds)
+                    vdu_metrics.TASKS_TOTAL.labels(outcome="rejected").inc()
+                    log.error(f"Task failed: {problem}")
+                    continue
 
                 # /dev/shm is RAM, so the SDK reads the file without touching disk.
-                file_bytes = base64.b64decode(task_data["data"])
-                ext = task_data.get("extension", "jpg")
                 temp_path = os.path.join(settings.shm_dir, f"{task_id}.{ext}")
                 with open(temp_path, "wb") as f:
                     f.write(file_bytes)
@@ -146,7 +184,7 @@ async def process_batch(r, engine, task_ids, settings):
         if not valid:
             return
 
-        vus_metrics.BATCH_SIZE.observe(len(valid))
+        vdu_metrics.BATCH_SIZE.observe(len(valid))
         logger.info(f"Dispatching batch of {len(valid)} to SDK engine")
 
         with _stage("parse"), FailedRegionCounter() as failed_regions:
@@ -156,7 +194,7 @@ async def process_batch(r, engine, task_ids, settings):
 
         warning = None
         if failed_regions.count:
-            vus_metrics.REGIONS_FAILED_TOTAL.inc(failed_regions.count)
+            vdu_metrics.REGIONS_FAILED_TOTAL.inc(failed_regions.count)
             warning = (
                 f"{failed_regions.count} region(s) in this batch of {len(valid)} document(s) "
                 f"failed to transcribe and were dropped from the output; this document may be incomplete"
@@ -169,12 +207,12 @@ async def process_batch(r, engine, task_ids, settings):
                 log = logger.bind(task_id=task_id, attempt=attempts)
                 if error:
                     action = q.handle_failure(r, task_id, error, attempts, settings.max_attempts, settings.result_ttl_seconds)
-                    vus_metrics.TASKS_TOTAL.labels(outcome=action).inc()
+                    vdu_metrics.TASKS_TOTAL.labels(outcome=action).inc()
                     log.error(f"Task {action}: {error}")
                     continue
                 result_json = json.dumps({"markdown": markdown, "layout": layout})
                 removed = q.finish_done(r, task_id, result_json, settings.result_ttl_seconds, warning)
-                vus_metrics.TASKS_TOTAL.labels(outcome="done").inc()
+                vdu_metrics.TASKS_TOTAL.labels(outcome="done").inc()
                 if removed == 0:
                     log.warning("Task completed but was no longer on the in-progress list (recovered by the reaper meanwhile?)")
                 log.info("Task done" + (" with warning" if warning else ""))
@@ -183,7 +221,7 @@ async def process_batch(r, engine, task_ids, settings):
         logger.error(f"Batch processing failed: {e}")
         for task_id, attempts in valid:
             action = q.handle_failure(r, task_id, e, attempts, settings.max_attempts, settings.result_ttl_seconds)
-            vus_metrics.TASKS_TOTAL.labels(outcome=action).inc()
+            vdu_metrics.TASKS_TOTAL.labels(outcome=action).inc()
             logger.bind(task_id=task_id, attempt=attempts).error(f"Task {action}: {e}")
     finally:
         for path in temp_paths:
@@ -199,7 +237,7 @@ class _stage:
         self.t0 = time.perf_counter()
 
     def __exit__(self, *exc):
-        vus_metrics.STAGE_SECONDS.labels(stage=self.name).observe(time.perf_counter() - self.t0)
+        vdu_metrics.STAGE_SECONDS.labels(stage=self.name).observe(time.perf_counter() - self.t0)
         return False
 
 
@@ -248,8 +286,8 @@ def main():
     configure_logging()
     settings = Settings()
     r = q.make_redis()
-    engine = make_engine()
-    port = vus_metrics.serve()
+    engine = make_engine(prepare_config())
+    port = vdu_metrics.serve()
     logger.info(f"Metrics on :{port}/metrics")
     asyncio.run(worker_loop(r, engine, settings))
 

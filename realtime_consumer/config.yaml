@@ -121,7 +121,7 @@ pipeline:
       text: "OCR and recognize the text in this image. Maintain the original structure and formatting. Output only the recognized text:"
       table: "Convert this table image into a clean Markdown table format. Ensure all rows and columns are preserved accurately. Only output the markdown table:"
       formula: "Convert this mathematical formula into LaTeX format. Wrap the result in appropriate delimiters. Only output the LaTeX string:"
-      image_desc: "Describe this image in detail. If it is a chart or graph, explain the axes, data points, and the overall trend. For logos, icons, or other minimal elements, be extremely brief. \nBased on these rules, provide a comprehensive summary of the visual content:"
+      chart: "Describe this chart for a reader who cannot see it. Begin with 'Chart:' and then give the chart type, its title, what each axis shows with units, the most important values, and the overall trend. Report only what the chart shows. Output only the description:"
 
     # PDF processing
     pdf_dpi: 200
@@ -144,8 +144,9 @@ pipeline:
       formula:
         - display_formula
         - inline_formula
+      # chart is not listed here: a label in this category is replaced by an
+      # image placeholder in the Markdown, which would discard its description.
       image:
-        - chart
         - image
       text:
         - abstract
@@ -260,8 +261,10 @@ pipeline:
       formula:
         - display_formula
         - inline_formula
-      skip:
+      # Charts are described in words rather than dropped.
+      chart:
         - chart
+      skip:
         - image
       abandon:
         - header

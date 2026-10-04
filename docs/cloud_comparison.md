@@ -1,122 +1,74 @@
-# Cloud Provider Architecture Comparison: AKS vs. GKE
+# Azure and Google Cloud, Side by Side
 
-This document provides an architecture and operational comparison between the **Azure Kubernetes Service (AKS)** and **Google Kubernetes Engine (GKE)** implementations for this SLM-Powered OCR repository.
+The system is the same on both clouds: the same images, the same queue, the same
+autoscaling rules, the same network rules. Only the parts that touch the cloud
+itself differ. This page lists every one of those differences, so you know what
+changes if you move from one to the other.
 
----
+The two folders `k8s/aks/` and `k8s/gke/` render the same 30 objects with the
+same names; CI checks this on every push. Apart from the registry addresses,
+they differ in exactly three places, all covered below: how the GPU pods find
+their machines, the tolerations for the GPU machines' taints, and the internal
+load balancer annotation.
 
-## Architectural Overview: Shared Foundation
+## What is identical
 
-Both cloud deployments share an identical core application stack and metric-driven scaling philosophy:
+- The API, the worker, the reaper, the MCP server, Redis, and vLLM, with the
+  same settings (`kustomization.yml`'s `configMapGenerator` block is identical).
+- KEDA scaling on the Redis queues, vLLM's waiting requests, business-hours warm
+  starts, and the API's CPU.
+- The network rules, the pod security settings, and every container running as
+  an ordinary user on a read-only disk.
+- Prometheus, the alert rules, and the Grafana dashboard (except its GPU panel
+  on Google Cloud; see below).
 
-* **Ingest Gateway**: High-concurrency Rust Producer API (`ocr-api-rust`) running on CPU-optimized nodes (`apinp`).
-* **State Store**: High-memory Redis instance (`ocr-redis`) acting as a temporary document store and task queue.
-* **Layout Engine**: Asynchronous Python Consumer Worker (`ocr-worker-rt`) running layout analysis (**PP-DocLayoutV3**) on T4 GPUs (`gpunpt4`) with dynamic collector batching.
-* **SLM Inference Engine**: **vLLM** serving **Qwen 3.5 (4B)** on A100 80GB GPUs (`gpunpa100`) with continuous batching.
-* **Autoscaling Mechanics**: **KEDA** scaled objects monitoring Redis list length (`ocr_tasks`) and Prometheus metrics (`vllm:num_requests_waiting`).
-* **Zero-Copy Handoff**: Document buffers rasterized directly into `/dev/shm` Linux shared memory.
+## What differs
 
----
-
-## Technical Discrepancies Matrix
-
-The following table summarizes the provider-specific infrastructure configurations and manifest differences:
-
-| Architectural Component | Azure Kubernetes Service (AKS) | Google Kubernetes Engine (GKE) | Technical Rationale & Impact |
+| Topic | Azure (AKS) | Google Cloud (GKE) | Why it matters |
 | :--- | :--- | :--- | :--- |
-| **CLI & Auth** | `az cli` / `az login` | `gcloud sdk` / `gcloud auth login` | Cloud-native CLI commands for cluster management and credential fetching. |
-| **Container Registry** | **Azure Container Registry (ACR)**<br>`<YOUR_ACR_NAME>.azurecr.io` | **Google Artifact Registry (AR)**<br>`us-central1-docker.pkg.dev/...` | Regional image repository host per cloud ecosystem. |
-| **GPU Driver Lifecycle** | Helm-installed **NVIDIA GPU Operator** (`k8s/aks/infra/gpu-operator-values.yaml`) | **Natively Managed GPU Drivers** (`gpu-driver-version=default` node pool flag) | GKE compiles drivers and manages device plugin daemonsets natively, removing manual Helm operator overhead. |
-| **A100 GPU Machine Type** | `Standard_NC24ads_A100_v4` (24 vCPU, 220GB RAM, 1x A100 80GB) | `a2-ultragpu-1g` (12 vCPU, 170GB RAM, 1x A100 80GB) | Specialized compute instances tailored for 80GB VRAM requirements. |
-| **T4 GPU Machine Type** | `Standard_NC16as_T4_v3` (16 vCPU, 64GB RAM, 1x T4 16GB) | `n1-standard-4` + `--accelerator type=nvidia-tesla-t4,count=1` | Modular accelerator attachment on GKE vs fixed GPU SKU on AKS. |
-| **GPU Node Selection** | `kubernetes.azure.com/agentpool` | `cloud.google.com/gke-nodepool` | Cloud controller manager node labeling conventions. |
-| **GPU Node Taints & Tolerations** | Custom taints: `sku=gpunpa100:NoSchedule` / `sku=gpunpt4:NoSchedule` | Standard GKE GPU taint: `nvidia.com/gpu=present:NoSchedule` | GKE automatically taints GPU nodes and handles scheduling when pods specify `nvidia.com/gpu` limits. |
-| **Shared Storage Class (RWX)** | **Azure Blob CSI Driver**<br>`storageClassName: azureblob-fuse-premium` | **Google Cloud Filestore CSI Driver**<br>`storageClassName: standard-rwx` | Azure Blob Fuse CSI allows 300Gi allocations; GKE Filestore basic-hdd requires a minimum 1Ti allocation. |
-| **Internal Load Balancer** | `service.beta.kubernetes.io/azure-load-balancer-internal: "true"` | `networking.gke.io/load-balancer-type: "Internal"` | Provider-specific cloud controller manager annotations for private IP provisioning. |
-| **Enterprise Exposure & Gateway** | **Azure API Management (APIM)** in Internal VNet Mode with XML policies (`apim-policy.xml`) | **Google Cloud API Gateway** / **Cloud Armor** + Private Service Connect | Cloud-native API gateway, token validation (JWT), and rate-limiting at the network boundary. |
+| Command line | `az` | `gcloud` | Different tools, same steps. |
+| Image registry | Azure Container Registry, `<name>.azurecr.io` | Artifact Registry, `<region>-docker.pkg.dev/<project>/<repo>` | Set once in each `kustomization.yml`. |
+| Building images | `az acr build` builds inside Azure; no local Docker needed | `docker build` and `docker push` from your computer | The worker image is about 8.7 GB, so pushing it from a slow connection takes a long time on Google Cloud. |
+| Cluster shape | One cluster, pools placed by Azure | One zonal cluster in the zone that has both GPU types | On GKE, a regional cluster copies each pool into three zones and counts nodes per zone. The guide uses a zonal cluster so counts are literal. |
+| Network rules engine | Azure CNI powered by Cilium (`--network-dataplane cilium`) | Dataplane V2 (`--enable-dataplane-v2`, only at creation) | Without one, the network rules are ignored. |
+| GPU drivers | `--gpu-driver none` on the pools, then the NVIDIA GPU Operator from Helm (`k8s/aks/infra/gpu-operator-values.yaml`) | `gpu-driver-version=default` on the pools; GKE installs the driver and device plugin | One more install step on Azure. |
+| A100 machine | `Standard_NC24ads_A100_v4`: 24 vCPU, 220 GiB, one A100 80 GB | `a2-ultragpu-1g`: 12 vCPU, 170 GB, one A100 80 GB | |
+| T4 machine | `Standard_NC16as_T4_v3`: 16 vCPU, 110 GiB, one T4 16 GB | `n1-standard-4` (4 vCPU, 15 GB) with one T4 attached | Azure's T4 size is much bigger; GKE attaches the GPU to a general machine. |
+| How GPU pods find their pool | label `kubernetes.azure.com/agentpool` | label `cloud.google.com/gke-nodepool` | Both are set by the cloud on every node. |
+| GPU taint the pods tolerate | our own: `sku=gpunpa100`, `sku=gpunpt4` | GKE's own: `nvidia.com/gpu=present` | GKE taints GPU machines itself. |
+| Shared disk for model weights | Azure Blob storage (`azureblob-fuse-premium`), 300 GiB | Filestore (`standard-rwx`), 1 TiB minimum | Filestore needs its API turned on and is billed for the full 1 TiB. |
+| GPU metrics | The GPU Operator's exporter feeds the cluster's Prometheus; the dashboard shows GPU use | GKE sends them to Google Cloud Monitoring | The dashboard's GPU panel is empty on GKE. |
+| Internal load balancer | `service.beta.kubernetes.io/azure-load-balancer-internal: "true"` | `networking.gke.io/load-balancer-type: "Internal"` | Both give a private address only. |
+| Front door with keys and a rate limit | Azure API Management in internal mode, with `k8s/aks/networking/apim-policy.xml` | Not chosen yet; the API stays private | See the Google guide, section 12. |
 
----
-
-## Deep-Dive Audit: Verification of GKE Implementation
-
-### 1. Storage Provisioning (`pvc.yaml`)
-* **AKS (`k8s/aks/infra/provisioning/pvc.yaml`)**:
-  ```yaml
-  storageClassName: azureblob-fuse-premium
-  resources:
-    requests:
-      storage: 300Gi
-  ```
-* **GKE (`k8s/gke/infra/provisioning/pvc.yaml`)**:
-  ```yaml
-  storageClassName: standard-rwx
-  resources:
-    requests:
-      storage: 1Ti
-  ```
-* **Audit Finding**: Correctly updated. GCP Filestore basic-hdd instances require a minimum capacity of 1Ti. The GKE PVC reflects this requirement while preserving `ReadWriteMany` (RWX) support.
-
-### 2. Node Selection & GPU Tolerations (`deployment-vlm.yml` & `deployment-api.yml`)
-* **AKS Target**: Uses `kubernetes.azure.com/agentpool: gpunpa100` and tolerates `sku=gpunpa100:NoSchedule`.
-* **GKE Target**: Uses `cloud.google.com/gke-nodepool: gpunpa100` and tolerates GKE's default `nvidia.com/gpu=present:NoSchedule` taint.
-* **Audit Finding**: Correctly updated. GKE worker pods schedule seamlessly onto tainted GPU node pools without scheduling deadlocks.
-
-### 3. Service Exposure (`service.yml`)
-* **AKS (`k8s/aks/networking/service.yml`)**:
-  ```yaml
-  annotations:
-    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
-  ```
-* **GKE (`k8s/gke/networking/service.yml`)**:
-  ```yaml
-  annotations:
-    networking.gke.io/load-balancer-type: "Internal"
-  ```
-* **Audit Finding**: Correctly updated. Both services provision internal private IP addresses within their respective cloud virtual networks (VNet / VPC).
-
-### 4. GPU Driver Management
-* **AKS**: Requires declarative configuration of the NVIDIA GPU Operator via `k8s/aks/infra/gpu-operator-values.yaml` to handle kernel module compilation and driver loading on tainted nodes.
-* **GKE**: Utilizes GKE's native managed driver installation (`gpu-driver-version=default`). The driver installer daemonsets are managed by Google Cloud, eliminating `gpu-operator-values.yaml` in the GKE manifests.
-
----
-
-## Repository Manifest Mapping
+## Where each difference lives
 
 ```text
 k8s/
-├── aks/ # Azure-Specific Manifest Overlays
-│ ├── apps/
-│ │ ├── deployment-api.yml # AKS image tags & agentpool nodeSelectors
-│ │ ├── deployment-vlm.yml # AKS image tags & A100 agentpool nodeSelectors
-│ │ ├── keda-scaler.yml # KEDA autoscaling rules
-│ │ └── redis-deployment.yml # Redis state store deployment
-│ ├── infra/
-│ │ ├── gpu-operator-values.yaml # NVIDIA GPU Operator tolerations for AKS
-│ │ └── provisioning/
-│ │ ├── ingest-job.yaml # Model downloader job
-│ │ └── pvc.yaml # azureblob-fuse-premium PVC (300Gi)
-│ ├── networking/
-│ │ ├── apim-policy.xml # Azure APIM JWT & rate-limit policies
-│ │ └── service.yml # Azure Internal Load Balancer service
-│ └── kustomization.yml # AKS Kustomize entrypoint
-│
-└── gke/ # GCP-Specific Manifest Overlays
-    ├── apps/
-    │ ├── deployment-api.yml # Artifact Registry tags & gke-nodepool selectors
-    │ ├── deployment-vlm.yml # Artifact Registry tags & gke-nodepool selectors
-    │ ├── keda-scaler.yml # KEDA autoscaling rules
-    │ └── redis-deployment.yml # Redis state store deployment
-    ├── infra/
-    │ └── provisioning/
-    │ ├── ingest-job.yaml # Model downloader job
-    │ └── pvc.yaml # standard-rwx Filestore PVC (1Ti)
-    ├── networking/
-    │ └── service.yml # GKE Internal Load Balancer service
-    └── kustomization.yml # GKE Kustomize entrypoint
+  aks/                               Azure
+    kustomization.yml                registry addresses, settings (identical to GKE)
+    apps/
+      deployment-worker.yml          GPU pool selector and taint (agentpool, sku=gpunpt4)
+      deployment-vlm.yml             GPU pool selector and taint (agentpool, sku=gpunpa100)
+      deployment-mcp.yml             internal load balancer annotation
+      deployment-api.yml, deployment-reaper.yml, redis-deployment.yml, keda-scaler.yml
+    networking/
+      service.yml                    internal load balancer annotation
+      network-policies.yml           identical to GKE
+      apim-policy.xml                Azure only
+    observability/                   identical to GKE
+    infra/
+      gpu-operator-values.yaml       Azure only
+      provisioning/pvc.yaml          Blob storage, 300 GiB
+      provisioning/ingest-job.yaml   identical to GKE
+  gke/                               Google Cloud, the same layout
+    apps/deployment-worker.yml       gke-nodepool selector, nvidia.com/gpu toleration
+    apps/deployment-vlm.yml          the same
+    infra/provisioning/pvc.yaml      Filestore, 1 TiB
+    (no gpu-operator-values.yaml, no apim-policy.xml)
 ```
 
----
+## The deployment guides
 
-## Deployment Guides Reference
-
-* [Azure Kubernetes Service (AKS) Deployment Lifecycle](aks_deployment.md)
-* [Google Kubernetes Engine (GKE) Deployment Lifecycle](gke_deployment.md)
+- [Deploying on Azure (AKS)](aks_deployment.md)
+- [Deploying on Google Cloud (GKE)](gke_deployment.md)

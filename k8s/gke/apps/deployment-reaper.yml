@@ -15,6 +15,14 @@ spec:
       labels:
         app: ocr-reaper
     spec:
+      # No Kubernetes API access is needed, so no service account token is mounted.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       nodeSelector:
         app: api-gateway
       tolerations:
@@ -26,6 +34,11 @@ spec:
         - name: ocr-reaper
           image: ocr-reaper  # registry set in kustomization.yml
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 9100
               name: metrics
@@ -38,6 +51,14 @@ spec:
                 secretKeyRef:
                   name: ocr-redis-secret
                   key: password
+            # Signs webhook callbacks. Only needed once CALLBACK_ALLOWED_HOSTS
+            # is set; optional so the reaper starts without it.
+            - name: WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: ocr-webhook-secret
+                  key: secret
+                  optional: true
           livenessProbe:
             httpGet:
               path: /metrics

@@ -3,5 +3,7 @@
 FROM python:3.12-slim
 WORKDIR /app
 RUN pip install --no-cache-dir redis loguru prometheus_client
-COPY vus_queue.py vus_metrics.py reaper.py /app/
+COPY vdu_queue.py vdu_metrics.py vdu_webhook.py reaper.py /app/
+RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin vdu
+USER 10001
 CMD ["python3", "reaper.py"]

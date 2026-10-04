@@ -25,6 +25,7 @@ money per hour and the earlier tracks catch most mistakes for free.
 4. [A Windows-Specific Warning You Must Read](#4-a-windows-specific-warning-you-must-read)
 5. [Track 0: Local Plumbing Test](#5-track-0-local-plumbing-test)
 6. [Track 1: Local End to End Without a GPU](#6-track-1-local-end-to-end-without-a-gpu)
+   - [6b. Track 1b: Talk to It From an AI Assistant](#6b-track-1b-talk-to-it-from-an-ai-assistant)
 7. [Setting Up Azure, Step by Step](#7-setting-up-azure-step-by-step)
 8. [Setting Up Google Cloud Instead](#8-setting-up-google-cloud-instead)
 9. [Track 2: One Cloud GPU Machine](#9-track-2-one-cloud-gpu-machine)
@@ -52,15 +53,15 @@ status of each.
 | `--load-format instanttensor` | `server/entrypoint.sh` | A real vLLM flag. Loads safetensors weights on CUDA using pipelined prefetching and direct I/O. |
 | `--mm-encoder-tp-mode data` | `server/entrypoint.sh` | A real vLLM flag. Switches the vision encoder to batch-level data parallelism. See the note below. |
 
-**Two things worth knowing before you trust the README:**
+**Two things worth knowing about the model server:**
 
-**The Multi-Token Prediction claim is not configured.** The README credits MTP
-with a 50 percent throughput increase and the 1.86 pages per second figure. I
-searched the entire repository for `mtp`, `speculative`, `draft`, and `ngram`
-and found zero matches. vLLM enables MTP through a
-`--speculative-config '{"method": "mtp", ...}'` argument, and
-`server/entrypoint.sh` has no such flag. Treat the performance numbers as
-unverified marketing until you measure them on your own hardware.
+**Multi-token prediction is off unless you turn it on.** It is an opt-in
+switch: set `SPECULATIVE_CONFIG` on the vLLM deployment, for example to
+`{"method":"qwen3_next_mtp","num_speculative_tokens":2}`, the value the
+Qwen3.5-4B model card recommends. Whether it helps must be measured on your own
+hardware. Nothing about reading speed on GPUs has been measured yet:
+[docs/performance.md](docs/performance.md) records what has been measured (the
+API and Redis) and how to measure the rest.
 
 **`--mm-encoder-tp-mode data` currently does nothing.** That flag distributes
 the vision encoder across tensor-parallel ranks. The deployment requests exactly
@@ -129,6 +130,7 @@ Install these in order. Each command below assumes you are in a terminal.
 | **Git** | Version control. You have it if you cloned the repo. | Track 0 |
 | **Docker Desktop** | Builds and runs containers on your machine | Track 0 |
 | **curl** | Sends test requests to the API | Track 0 |
+| **Python 3.10 or later** | Runs the test scripts and the tools in `tools/`, inside the project's own environment ([testing-guide.md](testing-guide.md) section 3) | Track 0 |
 | **Azure CLI (`az`)** | Controls your Azure account from the terminal | Track 2 |
 | **kubectl** | Controls a Kubernetes cluster | Track 3 |
 | **Helm** | Installs packaged Kubernetes software (KEDA, Prometheus, GPU drivers) | Track 3 |
@@ -138,6 +140,7 @@ Installation on Windows, in PowerShell:
 ```powershell
 winget install --id Git.Git -e
 winget install --id Docker.DockerDesktop -e
+winget install --id Python.Python.3.12 -e
 winget install --id Microsoft.AzureCLI -e
 winget install --id Kubernetes.kubectl -e
 winget install --id Helm.Helm -e
@@ -149,6 +152,7 @@ verify:
 ```powershell
 git --version
 docker --version
+python --version
 az version
 kubectl version --client
 helm version
@@ -162,7 +166,7 @@ of the Azure CLI.
 
 ## 4. A Windows-Specific Warning You Must Read
 
-You are on Windows 11. Every command in this repository's deployment guides is
+If you are on Windows, read this first. Every command in this repository's deployment guides is
 written for a Unix shell. They use `export VAR="value"` for environment
 variables and `$VAR` to read them back. PowerShell uses `$env:VAR = "value"`
 instead, and it does not understand `export` at all.
@@ -193,10 +197,11 @@ sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
 curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 ```
 
-Your Windows files are visible inside WSL at `/mnt/c/`, so this repository is at:
+Your Windows files are visible inside WSL at `/mnt/c/`. For example, a copy of
+this repository in the `Projects` folder on your Desktop is at:
 
 ```bash
-cd /mnt/c/Users/mukjo/Desktop/Projects/visual_understanding_system
+cd /mnt/c/Users/<you>/Desktop/Projects/visual_document_understanding
 ```
 
 For better performance you may prefer to clone a second copy inside the Linux
@@ -220,7 +225,7 @@ trip works here, any later failure is in the AI half, not the plumbing.
 
 ### The one-command version
 
-Since Phase 1, this whole track is automated. From the repository root:
+This whole track is automated. From the repository root:
 
 ```bash
 docker compose -f docker-compose.test.yml up --build -d
@@ -228,29 +233,32 @@ python tests/integration/smoke.py
 docker compose -f docker-compose.test.yml down
 ```
 
-`smoke.py` runs 47 checks and prints one line per check. If every line says
-`ok`, Track 0 is done and you can skip to Track 1. It starts Redis (with a
-password and persistence, as in the cluster), the API, and the reaper, on the
-unusual host ports 15000, 16379, and 19100 so it never collides with anything
-else on your machine. The manual steps below are still worth reading once,
-because they show you what the automation is checking.
+`smoke.py` runs 84 checks and prints one line per check. If every line says
+`ok`, Track 0 is done and you can skip to Track 1. The compose file starts Redis
+(with a password and persistence, as in the cluster), the API, the reaper, the
+MCP server, and a small webhook receiver, on unusual host ports (15000, 16379,
+19100, 18080, 19000) so they never collide with anything else on your machine.
+The script needs a few Python packages; [testing-guide.md](testing-guide.md)
+section 3 sets them up, and its section 5 explains every line the script
+prints. The manual steps below are still worth reading once, because they show
+you what the automation is checking.
 
 ### 5.1 Start Redis
 
 ```bash
-docker network create vus-net
-docker run -d --name vus-redis --network vus-net -p 6379:6379 redis:7-alpine
+docker network create vdu-net
+docker run -d --name vdu-redis --network vdu-net -p 6379:6379 redis:7-alpine
 ```
 
 ### 5.2 Build and run the Rust API
 
 ```bash
 cd realtime_producer
-docker build -t vus-api:local .
-docker run -d --name vus-api --network vus-net -p 5000:5000 \
-  -e REDIS_HOST=vus-redis \
+docker build -t vdu-api:local .
+docker run -d --name vdu-api --network vdu-net -p 5000:5000 \
+  -e REDIS_HOST=vdu-redis \
   -e REDIS_PORT=6379 \
-  vus-api:local
+  vdu-api:local
 ```
 
 The first build takes several minutes because it compiles Rust from source. Later
@@ -260,7 +268,7 @@ separately from your code.
 Check it started:
 
 ```bash
-docker logs vus-api
+docker logs vdu-api
 ```
 
 You should see a line saying the producer API is listening on `0.0.0.0:5000`.
@@ -296,30 +304,30 @@ correct result for this track.
 This is the part that proves the plumbing:
 
 ```bash
-docker exec -it vus-redis redis-cli
-
-# Inside the Redis prompt:
-LRANGE ocr_tasks 0 -1          # should list your task_id
-HKEYS task:3f8c1a2e-...        # should show: status, filename, extension, data
-HGET task:3f8c1a2e-... status  # should print: queued
-STRLEN task:3f8c1a2e-... 
-exit
+docker exec vdu-redis redis-cli LRANGE ocr_tasks 0 -1          # should list your task_id
+docker exec vdu-redis redis-cli HKEYS task:3f8c1a2e-...        # six fields: status, filename, extension, attempts, submitted_at, cache_key
+docker exec vdu-redis redis-cli HGET task:3f8c1a2e-... status  # should print: queued
+docker exec vdu-redis redis-cli STRLEN taskdata:3f8c1a2e-...   # the document's size in bytes
 ```
 
+Everything after a `#` on a line is a note for you; the terminal ignores it.
+
 **What you have proved:** file upload works, the 10 MB limit works, the atomic
-`HSET` write works, the queue push works, and the status endpoint reads back
+write works, the queue push works, and the status endpoint reads back
 correctly.
 
-**A thing to observe while you are here.** Run `HGET task:<id> data` and look at
-how long that base64 string is, then compare it to your original file size. It
-will be about 33 percent larger. That is gap 10 from the system explanation, and
-seeing it yourself makes the fix worth doing later.
+**A thing to observe while you are here.** Compare the number `STRLEN` printed
+with your file's size: they are the same, because the document is stored as it
+is, in a key of its own (`taskdata:<id>`). Storing it inside the task record as
+base64 text would make it about a third bigger, and every status check would
+drag it along. [testing-guide.md](testing-guide.md) section 6 walks through
+every field.
 
 ### 5.5 Clean up
 
 ```bash
-docker rm -f vus-api vus-redis
-docker network rm vus-net
+docker rm -f vdu-api vdu-redis
+docker network rm vdu-net
 ```
 
 ---
@@ -452,16 +460,35 @@ comment notes that DEBUG turns on timing output, and you want that on your first
 run.
 
 **Never commit this file.** `config.local.yaml` now contains a live credential.
-Add it to `.gitignore` before your next commit:
+The repository's `.gitignore` already lists it. Check that git agrees:
 
 ```bash
-echo "config.local.yaml" >> ../.gitignore
+git check-ignore -v config.local.yaml
 ```
+
+It prints the `.gitignore` line that ignores it:
+`.gitignore:184:realtime_consumer/config.local.yaml	config.local.yaml`. If it
+prints nothing, the file is not ignored: fix that before your next commit.
 
 ### 6.3 Build and run the worker
 
-If the smoke test's containers are still running from Track 0, stop them first,
-because they hold the same ports:
+**The shorter way.** The test stack's compose file can start the
+real worker for you, next to the API and Redis, reading this same
+`config.local.yaml`:
+
+```bash
+docker compose -f ../docker-compose.test.yml up --build -d
+docker compose -f ../docker-compose.test.yml --profile maas up -d --build worker
+```
+
+The API is then on port 15000 instead of 5000, so use `http://localhost:15000`
+in the commands below. [testing-guide.md](testing-guide.md) section 14 walks
+through it with real output. The manual steps that follow do the same thing by
+hand, and are worth doing once.
+
+The manual stack uses ports 5000 and 6379, so it does not clash with the test
+stack. If the test stack is still running and you do not need it, stop it to
+free memory:
 
 ```bash
 docker compose -f ../docker-compose.test.yml down
@@ -470,7 +497,7 @@ docker compose -f ../docker-compose.test.yml down
 Then build the worker:
 
 ```bash
-docker build -t vus-worker:local .
+docker build -t vdu-worker:local .
 ```
 
 This image is large (it starts from an NVIDIA CUDA base) and will take a while
@@ -479,19 +506,19 @@ to build the first time.
 Then run the whole stack together:
 
 ```bash
-docker network create vus-net
-docker run -d --name vus-redis --network vus-net -p 6379:6379 redis:7-alpine
+docker network create vdu-net
+docker run -d --name vdu-redis --network vdu-net -p 6379:6379 redis:7-alpine
 
-docker run -d --name vus-api --network vus-net -p 5000:5000 \
-  -e REDIS_HOST=vus-redis \
-  vus-api:local
+docker run -d --name vdu-api --network vdu-net -p 5000:5000 \
+  -e REDIS_HOST=vdu-redis \
+  vdu-api:local
 
-docker run -d --name vus-worker --network vus-net \
+docker run -d --name vdu-worker --network vdu-net \
   --shm-size=2g \
-  -e REDIS_HOST=vus-redis \
+  -e REDIS_HOST=vdu-redis \
   -e GLMOCR_CONFIG_PATH=/app/config.yaml \
   -v "$(pwd)/config.local.yaml:/app/config.yaml:ro" \
-  vus-worker:local
+  vdu-worker:local
 ```
 
 The API key is not passed as an environment variable here, because in MaaS mode
@@ -502,7 +529,7 @@ its config once, when it starts. Editing the file while it is running changes
 nothing until you run:
 
 ```bash
-docker restart vus-worker
+docker restart vdu-worker
 ```
 
 You do not need to rebuild the image. The config is mounted from your disk, not
@@ -536,7 +563,7 @@ quotes and on one line:
 
 ```bash
 curl -s -X POST http://localhost:5000/process \
-  -F "file=@C:/Users/mukjo/Desktop/Business/Change of Directors/Board Resolution.pdf"
+  -F "file=@C:/Users/<you>/Documents/Signed Contracts/Lease Agreement.pdf"
 ```
 
 **In PowerShell**, type `curl.exe`, not `curl`. In Windows PowerShell, plain
@@ -550,8 +577,13 @@ curl.exe -s -X POST http://localhost:5000/process -F "file=@C:\test\sample.pdf"
 
 Either way you get back a `task_id`.
 
-**If you forget the `@`, the API now tells you.** Since Phase 2 a text value in
-the `file` field is rejected with HTTP 400 and the message
+**Sending the same file twice?** The second time comes straight back as `done`
+with `cached: true`, without the worker or Z.ai being involved, so it costs
+nothing. To force a new reading, for example after changing the config, add
+`-H "Cache-Control: no-cache"` to the curl command.
+
+**If you forget the `@`, the API tells you.** A text value in the `file` field
+is rejected with HTTP 400 and the message
 `the 'file' field must be a file upload, not text (with curl, use file=@path)`.
 Nothing is queued. Likewise a file that is not a PDF, PNG, or JPEG gets HTTP 415,
 and an empty file gets 400. Only a real document ever reaches the queue.
@@ -559,7 +591,7 @@ and an empty file gets 400. Only a real document ever reaches the queue.
 You can still confirm what was stored:
 
 ```bash
-docker exec vus-redis redis-cli HGET task:<task_id> extension
+docker exec vdu-redis redis-cli HGET task:<task_id> extension
 ```
 
 That prints `pdf`, `png`, or `jpg`, decided from the file's content rather than
@@ -568,7 +600,7 @@ its name, which is what the worker needs to be right.
 Then watch the worker process it:
 
 ```bash
-docker logs -f vus-worker
+docker logs -f vdu-worker
 ```
 
 Press `Ctrl+C` to stop following the log. This stops the log view only, not the
@@ -576,8 +608,8 @@ worker.
 
 ### 6.5 Check whether it genuinely worked
 
-**Since Phase 2, `done` means done.** The worker now checks every result before
-recording it. A refused cloud request, an empty result, or a missing result is
+**`done` means done.** The worker checks every result before recording it. A
+refused cloud request, an empty result, or a missing result is
 recorded as `failed` with the real reason in the `error` field, and the task
 goes to the dead letter queue. A retryable failure is put back on the queue up to
 `MAX_ATTEMPTS` times first, and `attempts` in the status response shows how many
@@ -603,13 +635,14 @@ Note there is nothing after `json.tool`. A stray character there, such as
 | `status: "done"` and `"markdown"` contains real text | **It worked.** |
 | `status: "done"` with a `"warning"` | It worked, but some regions could not be transcribed. The text is there; parts may be missing. |
 | `status: "failed"` with an `"error"` | It did not work, and the error says why. Section 12 explains the common ones. |
+| `status: "failed"` with an `"error"` starting `document rejected:` | The file itself is the problem: corrupt, password protected, over 200 pages, or an enormous picture. It is not retried, because it would fail the same way again. |
 | `status: "queued"` with `attempts` above 0 | A retryable failure happened and the task is waiting for another go. |
 
 **3. Look for `[ERROR]` lines in the worker log.** Run this in Git Bash, since
 `grep` does not exist in PowerShell:
 
 ```bash
-docker logs vus-worker 2>&1 | grep -i "error"
+docker logs vdu-worker 2>&1 | grep -i "error"
 ```
 
 The `2>&1` is not optional. The worker writes its log lines to the error stream,
@@ -625,7 +658,7 @@ whatever the status says. Section 12 explains the common ones.
 | `WARNING: The NVIDIA Driver was not detected. GPU functionality will not be available.` | The worker image is built on an NVIDIA base image, which prints this banner whenever it starts on a machine without a GPU. In MaaS mode the cloud does all the work, so no local GPU is needed. |
 | Two different timestamps on each line, a few hours apart | Docker Desktop adds your local time to the front of each line. The worker's own logger writes the container's clock, which is UTC because no time zone is set inside the container. Same moment, written two ways. |
 
-### 6.5 What to actually look at
+### 6.6 What to actually look at
 
 This is the most valuable half hour in the whole project. Take documents you
 care about and study the output:
@@ -633,13 +666,56 @@ care about and study the output:
 - Did the tables come back as real Markdown tables, or as mangled text?
 - Did it get the reading order right on a multi-column page?
 - Are headers and page numbers correctly absent from the output?
-- What happened to charts? They are currently in the `skip` bucket in the
-  config, so they will be detected and then not described. Notice the gap where
-  a chart should be.
+- What happened to charts? In Z.ai mode that is decided by Z.ai's service, not
+  by this repository. On your own GPUs, a chart comes back as a written
+  description starting "Chart:".
 - Take a photo of a document at an angle with your phone and try that.
 
 Whatever disappoints you here tells you which improvements matter for your
 domain. That is more useful than any generic recommendation.
+
+---
+
+## 6b. Track 1b: Talk to It From an AI Assistant
+
+Once Track 1 works, the same running stack can be driven by Claude Code or
+Claude Desktop through the MCP server. This takes ten minutes and needs no
+cloud account. [docs/mcp_setup.md](docs/mcp_setup.md) walks through it in full.
+In short, from the repository folder in Git Bash:
+
+```bash
+python -m venv ~/.vdu-mcp
+~/.vdu-mcp/Scripts/python -m pip install ./mcp_server
+claude mcp add visual-document-understanding \
+  -e VDU_API_URL=http://localhost:5000 \
+  -e "VDU_ALLOWED_DIRS=C:\test" \
+  -- "C:/Users/<you>/.vdu-mcp/Scripts/vdu-mcp.exe"
+claude mcp list
+```
+
+The first two lines install the server once, into an environment of its own, so
+it never disturbs any other Python program. The third registers it with Claude
+Code: `localhost:5000` is the API from Track 1 (the testing guide's stack uses
+port 15000 instead), and `C:\test` is the only folder it may read. Put your own
+user name in the path. After pulling new code, update it with
+`~/.vdu-mcp/Scripts/python -m pip install --upgrade ./mcp_server` and restart
+Claude Code.
+
+Then, in Claude Code: *"Read C:\test\sample.pdf and tell me what it says."*
+You should see it call `read_document`, wait a moment, and answer from the text.
+Try `/summarise_document` to see a prompt, and *"extract the fields from
+C:\test\sample.pdf"* without saying what kind of document it is, to see the
+server ask you.
+
+[docs/mcp_setup.md](docs/mcp_setup.md) also covers Claude Desktop and connecting
+to a deployed system. Section 12 below covers what to do if the assistant cannot
+connect.
+
+**If Track 1 is not working yet** (no Z.ai balance, no GPU), you can still see
+everything the MCP server does. Route A of [testing-guide.md](testing-guide.md)
+uses a demo worker in place of the real one, so every workflow is exercisable
+with no API key, and it lists the exact things to ask Claude and what to expect
+back.
 
 ---
 
@@ -749,7 +825,7 @@ az account show --query id --output tsv
 
 ### 7.4 Point the CLI at your subscription
 
-Now the command that confused you makes sense. It tells the Azure CLI which
+This is what `az account set` does: it tells the Azure CLI which
 billing container to create things in. If you only have one subscription, the CLI
 already defaults to it and this command changes nothing. It matters once you have
 more than one, and the deployment guide includes it so that people with several
@@ -789,7 +865,7 @@ upgrade.
    across the top of the page instead.
 4. Add a payment method if you are prompted for one.
 5. You may need to verify your phone number again.
-6. Give the subscription a name. Something like `visual-understanding-system` is
+6. Give the subscription a name. Something like `visual-document-understanding` is
    more useful than the default.
 7. Choose a support plan. **Basic is free** and is what you want unless you have
    a specific reason to pay for support.
@@ -982,7 +1058,7 @@ Then create a project, because everything lives inside one:
 
 1. Go to **https://console.cloud.google.com**.
 2. Use the project dropdown in the top bar and choose **New Project**.
-3. Name it something like `visual-understanding-system`.
+3. Name it something like `vdu-pipeline`.
 4. Create it, then make sure it is the selected project in the top bar before
    doing anything else.
 
@@ -990,8 +1066,8 @@ Then create a project, because everything lives inside one:
 
 The project **name** is what you typed. The project **ID** is what the CLI wants,
 and they are often different, because IDs must be globally unique. Google usually
-appends digits, so `visual-understanding-system` may become
-`visual-understanding-system-481203`.
+appends digits, so `vdu-pipeline` may become
+`vdu-pipeline-481203`.
 
 To find it, open the project dropdown in the top bar of the console. The ID is
 shown beside each project name. It also appears on the project's dashboard page.
@@ -1265,74 +1341,62 @@ Track 3 takes a day and this takes ten minutes.
 
 **Goal:** the real system.
 
-Follow [docs/aks_deployment.md](docs/aks_deployment.md) end to end. It is 576
-lines and it is genuinely complete. Do not improvise around it.
+Follow [docs/aks_deployment.md](docs/aks_deployment.md) end to end, or
+[docs/gke_deployment.md](docs/gke_deployment.md) on Google Cloud, which has the
+same sections. They are long and they are complete. Do not improvise around
+them.
 
-Here is the shape of what it does, so you know where you are while working
-through it:
+Here is the shape of what the Azure guide does, so you know where you are while
+working through it:
 
-| Stage | What happens | Roughly how long |
+| Guide section | What happens | Roughly how long |
 | :--- | :--- | :--- |
-| 0 | Set environment variables, log in to Azure | 5 min |
-| 1 | Create container registry and AKS cluster, add four node pools | 30 min |
-| 1b | Install the NVIDIA GPU Operator via Helm, verify GPUs are schedulable | 15 min |
-| 2 | Create the shared storage claim, run the model ingest job | 45 min, mostly downloading |
-| 3 | Build and push three container images | 20 min |
-| 4 | Install KEDA and Prometheus, deploy the stack | 15 min |
-| 5 | Test end to end, check logs and metrics | 30 min |
-| 6 | Set up Azure API Management in front of it | 45 min, and APIM itself takes 30 to 45 min to provision |
+| 0 to 1 | Set the names you will use, sign in, create the resource group | 5 min |
+| 2 | Create the container registry and the AKS cluster, with its network policy engine | 15 min |
+| 3 | Add the four node pools | 15 min |
+| 4 | Install the NVIDIA GPU Operator, check the GPUs are usable | 15 min |
+| 5 | Create the shared storage, download the model weights into the cluster | 45 min, mostly downloading |
+| 6 | Build the five container images in your registry (two are tiny) | 20 min |
+| 7 to 8 | Name your registry once, create the secrets, turn on pod security | 10 min |
+| 9 | Install KEDA and Prometheus, deploy the system | 15 min |
+| 10 | Check that every part works | 30 min |
+| 11 | Send documents, connect assistants | 15 min |
+| 12 | Put Azure API Management in front of it | 45 min, plus 30 to 45 min while Azure creates API Management |
 
-### Changes you must make before Stage 3
+Then [testing-guide.md](testing-guide.md) section 22 tests the deployed system
+from your computer: a first document, the MCP server, speed on the GPUs, and
+watching it scale.
 
-The manifests contain the original author's container registry hardcoded. If you
-do not change these, your deployment will try to pull images from a registry you
-do not own and every pod will fail with `ImagePullBackOff`.
+### Changes you must make before section 6
 
-| File | Line | Change |
-| :--- | :--- | :--- |
-| `docs/aks_deployment.md` | 19 | `ACR_NAME` to your own registry name |
-| `k8s/aks/apps/deployment-api.yml` | 26 | Registry host on the API image |
-| `k8s/aks/apps/deployment-api.yml` | 74 | Registry host on the worker image |
-| `k8s/aks/apps/deployment-vlm.yml` | 26 | Registry host on the vLLM image |
+Set your own container registry in one place: the `images:` block of
+`k8s/aks/kustomization.yml` (or `k8s/gke/kustomization.yml`), where every image
+points at a placeholder such as `<YOUR_ACR_NAME>.azurecr.io`. Also set
+`ACR_NAME` in section 0 of the deployment guide. If you skip this, every pod
+fails with `ImagePullBackOff`.
 
-Azure Container Registry names are globally unique across all of Azure, so the
-name in the repository is permanently taken by someone else. Pick your own.
+Azure Container Registry names are globally unique across all of Azure, so pick
+a name nobody else has.
 
-Also change the label `managed-by: gemini-cli-agent` in
-`k8s/aks/kustomization.yml` line 15 **before your first deploy**. That block has
-`includeSelectors: true`, which bakes the label into every Deployment's pod
-selector, and selectors cannot be changed on a running Deployment. Changing it
-later means deleting and recreating everything. Changing it now costs nothing.
+### Things in the deployment guide worth knowing
 
-### Two things in the deployment guide that will confuse you
+**The guides match the manifests**, and the half that needs no GPU was
+rehearsed on a local Kubernetes cluster; the outputs they show are from that
+run.
 
-**The example output in section 2.4 is wrong.** It shows a model called
-`Qwen3-VL-Embedding-2B` in the weights directory. The ingest job at
-`k8s/aks/infra/provisioning/ingest-job.yaml` line 23 only downloads
-`PaddlePaddle/PP-DocLayoutV3_safetensors` and `Qwen/Qwen3.5-4B`. The example is
-left over from an earlier version. Your directory listing will not match, and
-that is fine.
+**Create the cluster exactly as shown.** The cluster command includes network
+settings (Azure CNI powered by Cilium on AKS, Dataplane V2 on GKE). They are
+what make the network rules in `k8s/*/networking/` do anything. On GKE they
+cannot be added to an existing cluster.
 
-**There is a typo at line 54**, "Downlaod AKS credentials". Harmless, but it
-tells you the guide was not proofread, so read it critically rather than pasting
-blindly.
+### The A100 autoscaler: not yet seen on real GPUs
 
-### Do not expect the A100 autoscaler to work
-
-I need to flag this before you spend a day debugging it. The KEDA rule that
-scales the A100 pool queries a Prometheus metric called
-`vllm:num_requests_waiting`. For that metric to exist in Prometheus, something
-must tell Prometheus to scrape the vLLM pod. I searched the repository for a
-`ServiceMonitor`, a `PodMonitor`, and `prometheus.io/scrape` annotations and
-found none.
-
-So the A100 scale-up trigger will find no data and will not fire. The cron
-warm-start trigger on the same rule will still work, so you will get one replica
-during business hours, but it will not scale beyond that under load.
-
-This is a genuine missing piece, not a mistake on your part. It is logged as a
-gap in the implementation plan and gets fixed in Phase 3. Knowing it now saves
-you the debugging session.
+The A100 pool starts from zero when documents are waiting (it watches the Redis
+queues) and grows when vLLM has requests waiting (a Prometheus metric, collected
+through the ServiceMonitors). The configuration for both has been checked, and
+the metric collection was seen working on a local cluster for the API's own
+metrics, but neither has been seen on real GPUs yet, so watch it the first time
+with `kubectl describe scaledobject ocr-vlm-scaler`.
 
 ---
 
@@ -1358,9 +1422,7 @@ az aks nodepool update \
   --max-count 4
 ```
 
-Note that the guide's own example uses a pool named `gpunp`, which does not
-match the pools it created earlier in the same document (`gpunpa100` and
-`gpunpt4`). Use the correct pool name, shown above.
+Run it once for each GPU pool, `gpunpa100` and `gpunpt4`.
 
 **3. Know the nuclear option.** If anything goes wrong and you want everything
 gone:
@@ -1377,8 +1439,9 @@ more than tidiness.
 are deliberately aggressive: the T4 pool scales up when the queue has a single
 item, and the A100 pool is configured to scale when a single request is waiting.
 Combined with an API that is reachable, that is an unbounded cost surface. The
-API Management layer in Stage 6 with its 100 calls per minute limit is not
-optional polish. It is the brake. Do not leave the system reachable without it.
+API Management layer in section 12 of the deployment guide, with its limit of
+100 calls a minute per subscription, is not optional polish. It is the brake.
+Do not leave the system reachable without it.
 
 ---
 
@@ -1390,6 +1453,16 @@ These are the ones you meet first, in roughly the order you meet them.
 
 **The task says `failed`.** Read the `error` field in the status response; it
 holds the real reason. Every entry below matches one of those messages.
+
+**`document rejected: ...`** The worker opened the file before reading it and
+could not use it: a corrupt or password-protected PDF, a PDF over 200 pages
+(`MAX_PDF_PAGES`), or a picture that is truncated or enormous. It is not retried,
+because the same file fails the same way every time. Fix the file and send it
+again.
+
+**The answer comes back at once and the worker log shows nothing.** That is the
+result cache: the same file was read in the last day. Add
+`-H "Cache-Control: no-cache"` to force a new reading.
 
 **HTTP 400: `the 'file' field must be a file upload, not text`.** The curl
 command was missing the `@` before the path, so it sent the path as text instead
@@ -1411,7 +1484,7 @@ platform does not recognise gets error `1000` with HTTP status `401` instead.
 
 **The log says `MaaS client initialized for https://open.bigmodel.cn/...`** but
 your key came from Z.ai. The SDK is using its built-in default address. Add the
-`api_url` line from section 6.2, then run `docker restart vus-worker`.
+`api_url` line from section 6.2, then run `docker restart vdu-worker`.
 
 **Error code `1000`, `1001`, or `1003`, with HTTP status `401`.** Authentication
 failed. `1000` is a general failure, most often a key pasted with a missing or
@@ -1430,29 +1503,59 @@ on the end. A stray character was typed after `json.tool`. Delete it.
 You typed `curl` instead of `curl.exe`. See section 6.4.
 
 **You changed the config but nothing is different.** The worker only reads its
-config at startup. Run `docker restart vus-worker`.
+config at startup. Run `docker restart vdu-worker`.
 
 **`MissingApiKeyError` and the worker exits immediately.** The key is not where
 the SDK looks. It must be under `pipeline.maas.api_key`, not
 `pipeline.ocr_api.api_key`. See section 6.2.
 
+### Track 1b problems
+
+**`claude mcp list` shows the server as failed, or the tools never appear.**
+Run the server by hand in a terminal, by its full path, for example
+`~/.vdu-mcp/Scripts/vdu-mcp`. It should print a line containing
+`starting on stdio` and then wait silently for input (Ctrl+C to stop it). If it
+prints an error instead, that is the cause. Common ones: a wrong path in the
+registration (it must be the full path), a broken install (install it again, as
+[docs/mcp_setup.md](docs/mcp_setup.md) section 2 shows), or the API not running
+(check `curl http://localhost:5000/health`).
+
+**The assistant says the path is outside the allowed directories.** The server
+only reads files under `VDU_ALLOWED_DIRS`. Re-add the server with the folder
+your documents are in.
+
+**The assistant calls the tool but gets `the document was rejected`.** The
+message that follows is the Rust API's own reason: not a PDF/PNG/JPEG, empty, or
+too large. Same fixes as section 6.4.
+
+**`the URL was refused: ...`** The server fetches only https
+addresses that lead to public servers, and checks every redirect. An address
+inside your own network, or plain http, is refused on purpose. Save the file
+into your allowed folder and give the assistant the path instead.
+
+**Something this guide describes is missing, such as the `cached` field or the
+`fresh` option.** Claude is starting an older installed copy of the server.
+Update it ([docs/mcp_setup.md](docs/mcp_setup.md) section 2), then restart
+Claude Code.
+
 ### Track 3 problems
 
 Ordered by how likely you are to hit them.
 
-**`ImagePullBackOff` on every pod.** You did not change the container registry
-host in the manifests. See the table in section 10.
+**`ImagePullBackOff` on every pod.** You did not set your container registry in
+the kustomization's `images:` block. See section 10.
 
 **Pods stuck in `Pending` forever.** Run
 `kubectl describe pod <name>` and read the Events at the bottom. Almost always
 one of: no node has a free GPU, the node pool has a taint your pod does not
 tolerate, or the cluster autoscaler cannot get capacity in your region.
 
-**`GPU_ALLOCATABLE` shows 0 or none.** The NVIDIA GPU Operator did not install
-correctly. The deployment guide's own troubleshooting note covers this: check
-that the `gpu-operator` namespace has the `pod-security.kubernetes.io/enforce=privileged`
-label, and check the tolerations in `k8s/aks/infra/gpu-operator-values.yaml`.
-Without that label the operator pods are silently blocked from starting.
+**The GPU check shows `<none>` for a GPU machine.** The NVIDIA GPU Operator did
+not install correctly. The deployment guide's section 4 covers this: check
+`kubectl get pods -n gpu-operator`, that the `gpu-operator` namespace has the
+`pod-security.kubernetes.io/enforce=privileged` label, and the tolerations in
+`k8s/aks/infra/gpu-operator-values.yaml`. Without that label the operator pods
+are refused.
 
 **The vLLM pod takes ten minutes to become ready.** This is normal, not broken.
 It is pulling a multi-gigabyte image, loading weights, and compiling CUDA graphs.
@@ -1469,13 +1572,30 @@ endings got into `entrypoint.sh`. Work inside WSL2, or run
 
 **Tasks sit at `queued` and never move.** Either no worker is running, or the
 worker crashed. Check `kubectl get pods` and `kubectl logs -l app=ocr-worker-rt`.
-Note that if a worker pod is killed while holding tasks, those tasks are lost
-permanently and will sit at `processing` forever. That is gap 8 and it is fixed
-in Phase 2 of the implementation plan.
+A task whose worker was killed mid-document shows `processing` until
+`STALE_AFTER_SECONDS` (15 minutes) has passed; then the reaper puts it back in
+the queue. Check the reaper with `kubectl logs -l app=ocr-reaper`.
 
-**Redis restarted and everything vanished.** Expected with the current setup.
-Redis runs with no persistence, one replica, and no password. Also gap 6, also
-Phase 2.
+**Redis restarted and everything vanished.** This should not happen: Redis
+writes every change to its own disk. If it does, check that
+`redis-data-pvc` shows `Bound` in `kubectl get pvc`, and that
+`kubectl exec deploy/ocr-redis -- sh -c 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning config get appendonly'`
+answers `yes`.
+
+**A pod stays in `CreateContainerConfigError`.** It needs a Secret that does not
+exist yet, or that lacks the key it expects; `kubectl describe pod <name>` says
+which. Create the secrets as shown in the deployment guide, section 8.
+
+**A pod crashes with `Read-only file system` or `Permission denied`.** Every
+container runs as an ordinary user with a read-only disk. The log
+names the path it tried to write. Give it an `emptyDir` volume mounted at that
+path, as the worker and vLLM deployments do for `/tmp`, rather than removing the
+restriction.
+
+**The network check prints `NOAUTH` instead of `blocked`.** The cluster has no
+network policy engine, so the rules in `k8s/*/networking/network-policies.yml`
+are accepted and ignored. Recreating the cluster with the settings in the
+deployment guide is the reliable fix; on GKE it is the only one.
 
 ---
 
@@ -1490,34 +1610,48 @@ the cluster is torn down you cannot recover them.
   become your first regression test fixtures.
 - Every case where the output was wrong, with the input file. These become your
   evaluation set.
+- The evaluation scores on your own documents (`tools/evaluate.py`,
+  [testing-guide.md](testing-guide.md) section 13). They are the baseline every
+  prompt or profile change is measured against.
 
 **From Track 3:**
 - Cold start time: from submitting the first request of the day to getting a
   result, with the pools scaled to zero.
-- Warm throughput: submit 50 documents at once and time the whole batch. Divide
-  to get pages per second. Compare against the README's claim of 1.86.
+- Warm throughput: `tools/throughput.py` sends 50 documents and reports pages
+  per second and the time each one took ([docs/performance.md](docs/performance.md)
+  shows the command). There is no earlier figure to compare against, so this is
+  the system's first real number: write down the hardware with it, and add it
+  to the table in `docs/performance.md`.
 - Peak GPU memory on the A100, from
   `kubectl exec` into the vLLM pod and running `nvidia-smi`.
 - What KEDA actually did, from `kubectl get hpa` and
   `kubectl describe scaledobject ocr-worker-rt-scaler`.
 - Your actual spend for the day, from the portal.
 
-Record these before making any changes. Every improvement in the implementation
-plan is supposed to make something measurably better, and without a baseline you
-are guessing.
+Record these before making any changes. Every change you make should make
+something measurably better, and without a baseline you are guessing.
 
 ---
 
 ## Where To Go After This
 
-Once you have seen the system work, move to
-[implementation-plan.md](implementation-plan.md). It contains the verified gap
-register, the target architecture including the MCP server, and the phased plan
-for getting from here to there.
+Once you have seen the system work:
 
-Do not start Phase 0 until you have at least completed Track 1. Changing a system
-you have never seen run means you cannot tell whether your change helped or
-broke something.
+- [testing-guide.md](testing-guide.md) tries every capability, one at a time,
+  and shows what you should see back, including how to score the quality of
+  the output on your own documents.
+- [docs/aks_deployment.md](docs/aks_deployment.md) and
+  [docs/gke_deployment.md](docs/gke_deployment.md) build the full system on
+  Azure or Google Cloud, and check each part as they go.
+- [docs/mcp_setup.md](docs/mcp_setup.md) connects Claude Code or Claude Desktop,
+  either to the system on your own computer or to a deployed one.
+- [docs/performance.md](docs/performance.md) is where your GPU numbers go.
+  Nothing about reading speed on GPUs has been measured yet, so record yours
+  there, with the hardware and the date.
+- [system-explanation.md](system-explanation.md) explains how the whole system
+  works. Its [known limits](system-explanation.md#11-known-limits) and
+  [ideas for extending it](system-explanation.md#12-ideas-for-extending-it) are
+  the place to start if you want to change it.
 
 ---
 

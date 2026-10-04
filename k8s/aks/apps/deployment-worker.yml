@@ -14,6 +14,14 @@ spec:
       labels:
         app: ocr-worker-rt
     spec:
+      # No Kubernetes API access is needed, so no service account token is mounted.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       nodeSelector:
         kubernetes.azure.com/agentpool: gpunpt4
       tolerations:
@@ -26,6 +34,9 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: "4Gi"
+        - name: tmp
+          emptyDir:
+            sizeLimit: "2Gi"
         - name: model-weights
           persistentVolumeClaim:
             claimName: model-weights-pvc
@@ -33,6 +44,11 @@ spec:
         - name: ocr-worker-rt-python
           image: ocr-worker-rt  # registry set in kustomization.yml
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           ports:
             - containerPort: 9100
               name: metrics
@@ -70,6 +86,8 @@ spec:
           volumeMounts:
             - name: dshm
               mountPath: "/dev/shm"
+            - name: tmp
+              mountPath: "/tmp"
             - name: model-weights
               mountPath: "/mnt/models"
               readOnly: true

@@ -141,7 +141,7 @@ Repeat 4.4 for the A100:
 1. Clear the search and type `NCADS_A100_v4`.
 2. Select **Standard NCADS_A100_v4 Family vCPUs** → **New limit = 96** → submit.
 
-> Pick `NCADS_A100_v4` (the **NC** family), **not** the `ND...A100` families.
+> Pick `NCADS_A100_v4` (the **NC** family), **not** the `ND...A100` families:
 > those are the ND series for distributed multi-GPU training, which you don't
 > need here.
 

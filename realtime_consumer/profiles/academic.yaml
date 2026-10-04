@@ -1,0 +1,39 @@
+# Academic profile: research papers, theses, technical reports.
+#
+# Only what differs from config.yaml is listed. Select it with VDU_PROFILE=academic
+# on both the API and the worker. Takes effect in self-hosted mode only.
+
+pipeline:
+  page_loader:
+    task_prompt_mapping:
+      text: "Transcribe the text in this image exactly. Keep citation markers such as [12] or (Smith, 2020), section numbers, and inline mathematics; write inline mathematics as LaTeX between single dollar signs. Keep line breaks. Output only the text:"
+      formula: "Convert this formula into LaTeX. Keep every symbol, subscript, and superscript exactly as shown. Do not add an equation number. Output only the LaTeX:"
+      chart: "Describe this figure for a reader who cannot see it. Begin with 'Chart:' and then give the plot type, what each axis measures with units, each data series and its legend label, the key values, and the trend or comparison the figure shows. Output only the description:"
+
+  layout:
+    # Footnotes and margin notes carry content in papers, so they are read.
+    # Running headers, footers, and page numbers repeat on every page and are
+    # still discarded.
+    label_task_mapping:
+      text:
+        - abstract
+        - algorithm
+        - content
+        - doc_title
+        - figure_title
+        - paragraph_title
+        - reference_content
+        - text
+        - vertical_text
+        - vision_footnote
+        - seal
+        - formula_number
+        - footnote
+        - aside_text
+      abandon:
+        - header
+        - footer
+        - number
+        - reference
+        - footer_image
+        - header_image

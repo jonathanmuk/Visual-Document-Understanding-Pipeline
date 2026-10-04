@@ -1,4 +1,4 @@
-"""Shared queue operations for the worker and the reaper.
+"""Shared queue operations for the worker, the reaper, and the demo worker.
 
 Redis layout:
 
@@ -7,20 +7,30 @@ Redis layout:
     ocr_tasks:processing    in-progress list. A task is moved here atomically when
                             claimed, and removed only once it reaches a final state.
     ocr_tasks:dead          dead letter queue. Task IDs that failed for good.
-    task:{id}               the task hash: status, filename, extension, data,
-                            attempts, claimed_at, result, error, warning.
+    ocr_webhooks            finished tasks whose client asked for a callback.
+    task:{id}               the task hash: status, filename, extension, attempts,
+                            claimed_at, result, error, warning, cache_key,
+                            callback_url, callback_status.
+    taskdata:{id}           the document itself, as raw bytes. Deleted as soon as
+                            the task reaches a final state.
+    cache:{ver}:{profile}:{sha256}
+                            points at the task that processed a document with
+                            this exact content, so an identical upload can reuse it.
 
 A task is never in limbo: it is on exactly one of the two lists, or it is
 finished. That is what makes recovery possible when a worker dies.
 """
+import base64
 import os
 import time
 
 import redis
+from redis.client import NEVER_DECODE
 
 QUEUE_KEY = "ocr_tasks"
 PROCESSING_KEY = "ocr_tasks:processing"
 DEAD_KEY = "ocr_tasks:dead"
+WEBHOOK_KEY = "ocr_webhooks"
 DEAD_KEEP = 10000
 
 # Z.ai error codes that will never succeed on retry: billing (1113) and
@@ -33,6 +43,10 @@ NON_RETRYABLE_MARKERS = (
     '"code":"1003"',
     "MissingApiKeyError",
 )
+
+# Prefix for errors about the document itself (corrupt, too many pages). The same
+# bytes fail the same way every time, so these are never retried either.
+REJECTED_PREFIX = "document rejected:"
 
 
 def make_redis():
@@ -49,9 +63,30 @@ def task_key(task_id):
     return f"task:{task_id}"
 
 
+def data_key(task_id):
+    return f"taskdata:{task_id}"
+
+
 def is_non_retryable(error_text):
     text = error_text or ""
-    return any(marker in text for marker in NON_RETRYABLE_MARKERS)
+    return text.startswith(REJECTED_PREFIX) or any(marker in text for marker in NON_RETRYABLE_MARKERS)
+
+
+def read_document(r, task_id, task_hash):
+    """Return the document's bytes, or None if it is gone.
+
+    The client decodes replies as text, which would mangle a PDF, so this one
+    read asks Redis for the raw bytes. Tasks queued by an older API kept the
+    document base64-encoded in the hash; those are still read, so an upgrade
+    never strands work already waiting.
+    """
+    raw = r.execute_command("GET", data_key(task_id), **{NEVER_DECODE: []})
+    if raw is not None:
+        return raw
+    legacy = task_hash.get("data")
+    if legacy:
+        return base64.b64decode(legacy)
+    return None
 
 
 def claim_first(r, timeout_seconds):
@@ -77,22 +112,59 @@ def mark_claimed(r, task_id):
     return int(attempts)
 
 
-def finish_done(r, task_id, result_json, ttl_seconds, warning=None):
+def _settle_cache(r, task_id, cache_key, keep_seconds):
+    """Keep or drop the cache pointer, but only if it still points at this task.
+
+    A clean success keeps it for as long as the result lives. A failure, or a
+    success with lost regions, drops it, so the next identical upload gets a
+    fresh attempt instead of a replay of a bad answer. The check and the change
+    happen in one transaction, so a newer task's pointer is never touched.
+    """
+    if not cache_key:
+        return
+
+    def txn(pipe):
+        if pipe.get(cache_key) != task_id:
+            return
+        pipe.multi()
+        if keep_seconds:
+            pipe.expire(cache_key, keep_seconds)
+        else:
+            pipe.delete(cache_key)
+
+    r.transaction(txn, cache_key)
+
+
+def _finish(r, task_id, mapping, ttl_seconds, keep_cache):
     key = task_key(task_id)
-    mapping = {"status": "done", "result": result_json, "data": ""}
+    extra = r.hmget(key, "cache_key", "callback_url")
+    cache_key, callback_url = extra[0], extra[1]
+    if callback_url:
+        mapping["callback_status"] = "pending"
+    pipe = r.pipeline()
+    pipe.hset(key, mapping=mapping)
+    # Older tasks carried the document in the hash; drop it with the rest.
+    pipe.hdel(key, "data")
+    pipe.expire(key, ttl_seconds)
+    pipe.delete(data_key(task_id))
+    pipe.lrem(PROCESSING_KEY, 0, task_id)
+    if callback_url:
+        pipe.lpush(WEBHOOK_KEY, task_id)
+    removed = pipe.execute()[4]
+    _settle_cache(r, task_id, cache_key, ttl_seconds if keep_cache else None)
+    return removed
+
+
+def finish_done(r, task_id, result_json, ttl_seconds, warning=None):
+    mapping = {"status": "done", "result": result_json}
     if warning:
         mapping["warning"] = warning
-    r.hset(key, mapping=mapping)
-    r.expire(key, ttl_seconds)
-    return r.lrem(PROCESSING_KEY, 0, task_id)
+    return _finish(r, task_id, mapping, ttl_seconds, keep_cache=not warning)
 
 
 def finish_failed(r, task_id, error, ttl_seconds):
     """Terminal failure. The task goes to the dead letter queue for inspection."""
-    key = task_key(task_id)
-    r.hset(key, mapping={"status": "failed", "error": str(error)[:2000], "data": ""})
-    r.expire(key, ttl_seconds)
-    removed = r.lrem(PROCESSING_KEY, 0, task_id)
+    removed = _finish(r, task_id, {"status": "failed", "error": str(error)[:2000]}, ttl_seconds, keep_cache=False)
     r.rpush(DEAD_KEY, task_id)
     # The task hashes expire; the ID list would not. Keep the most recent
     # DEAD_KEEP entries so it cannot grow without bound.
@@ -132,4 +204,5 @@ def depths(r):
         "waiting": r.llen(QUEUE_KEY),
         "processing": r.llen(PROCESSING_KEY),
         "dead": r.llen(DEAD_KEY),
+        "webhooks": r.llen(WEBHOOK_KEY),
     }

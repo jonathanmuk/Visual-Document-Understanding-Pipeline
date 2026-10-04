@@ -31,6 +31,17 @@ export PYTHONUNBUFFERED=1
 ###############################################################################
 echo "Starting $SERVED_NAME with vLLM..."
 
+# Multi-token prediction (MTP) is off unless SPECULATIVE_CONFIG is set. The
+# Qwen3.5-4B model card recommends:
+#   SPECULATIVE_CONFIG='{"method":"qwen3_next_mtp","num_speculative_tokens":2}'
+# Speculative decoding usually helps most at low concurrency; measure it at your
+# real load before leaving it on.
+EXTRA_ARGS=()
+if [ -n "${SPECULATIVE_CONFIG:-}" ]; then
+  echo "Speculative decoding on: $SPECULATIVE_CONFIG"
+  EXTRA_ARGS+=(--speculative-config "$SPECULATIVE_CONFIG")
+fi
+
 # --mm-encoder-tp-mode only takes effect when --tensor-parallel-size is above 1.
 # This deployment runs one GPU per pod, so the flag is inert today. It is kept so
 # that raising tensor parallelism later does not also require remembering it.
@@ -47,5 +58,6 @@ exec vllm serve "$MODEL_PATH" \
   --load-format instanttensor \
   --reasoning-parser qwen3 \
   --default-chat-template-kwargs '{"enable_thinking": false}' \
-  --enable-chunked-prefill
+  --enable-chunked-prefill \
+  "${EXTRA_ARGS[@]}"
 

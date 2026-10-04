@@ -14,6 +14,14 @@ spec:
       labels:
         app: ocr-vlm
     spec:
+      # No Kubernetes API access is needed, so no service account token is mounted.
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       nodeSelector:
         kubernetes.azure.com/agentpool: gpunpa100
       tolerations:
@@ -26,9 +34,10 @@ spec:
           image: ocr-vlm-qwen  # registry set in kustomization.yml
           imagePullPolicy: Always
           securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
-              add:
-                - IPC_LOCK
+              drop: ["ALL"]
           envFrom:
             - configMapRef:
                 name: ocr-pipeline-config
@@ -63,15 +72,33 @@ spec:
             - name: model-weights
               mountPath: /mnt/models
               readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: dshm
+              mountPath: /dev/shm
       volumes:
         - name: model-weights
           persistentVolumeClaim:
             claimName: model-weights-pvc
+        # Compile and kernel caches (HOME is /tmp in the image).
+        - name: tmp
+          emptyDir:
+            sizeLimit: "20Gi"
+        # vLLM's processes pass data through shared memory; the default 64Mi is too small.
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "8Gi"
 ---
 apiVersion: v1
 kind: Service
 metadata:
   name: ocr-vlm-service
+  # The ServiceMonitor in observability/ finds this Service by this label.
+  # Without it Prometheus never collects vLLM's metrics, and the rule that
+  # adds a second A100 when requests are waiting can never fire.
+  labels:
+    app: ocr-vlm
 spec:
   selector:
     app: ocr-vlm

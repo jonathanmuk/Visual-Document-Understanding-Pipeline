@@ -1,4 +1,4 @@
-use ocr_producer_rust::{app, redis_client_from_env, AppState};
+use ocr_producer_rust::{app, redis_client_from_env, AppState, Config};
 use std::sync::Arc;
 
 #[tokio::main]
@@ -12,9 +12,9 @@ async fn main() {
         tracing_subscriber::fmt().init();
     }
 
-    let state = Arc::new(AppState {
-        redis_client: redis_client_from_env(),
-    });
+    let config = Config::from_env();
+    tracing::info!(?config, "configuration");
+    let state = Arc::new(AppState::new(redis_client_from_env(), config));
     let router = app(state);
 
     let addr = std::net::SocketAddr::from(([0, 0, 0, 0], 5000));

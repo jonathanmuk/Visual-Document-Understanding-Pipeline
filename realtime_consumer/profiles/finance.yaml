@@ -1,0 +1,40 @@
+# Finance profile: invoices, receipts, bank statements, purchase orders.
+#
+# Only what differs from config.yaml is listed. Select it with VDU_PROFILE=finance
+# on both the API and the worker. Takes effect in self-hosted mode only.
+
+pipeline:
+  page_loader:
+    task_prompt_mapping:
+      text: "Transcribe the text in this image exactly as printed. Keep every number, date, currency symbol, reference number, and account number character for character; never round, reformat, or correct them. Keep line breaks. Output only the text:"
+      table: "Convert this table into a Markdown table. Keep every row and column in the original order, including headers, subtotals, tax lines, and totals. Copy amounts exactly as printed, with their decimal places and currency symbols. Leave a cell empty if it is empty. Output only the Markdown table:"
+      chart: "Describe this chart for a reader who cannot see it. Begin with 'Chart:' and then give the chart type, its title, the period covered, what each axis shows with units and currency, the key values with their exact figures, and the overall trend. Output only the description:"
+
+  layout:
+    # Headers and footers on financial documents often carry the invoice number,
+    # company name, registration number, and payment terms, so they are read
+    # rather than thrown away. Footnotes carry terms and conditions. Page numbers
+    # and margin notes are still discarded.
+    label_task_mapping:
+      text:
+        - abstract
+        - algorithm
+        - content
+        - doc_title
+        - figure_title
+        - paragraph_title
+        - reference_content
+        - text
+        - vertical_text
+        - vision_footnote
+        - seal
+        - formula_number
+        - header
+        - footer
+        - footnote
+      abandon:
+        - number
+        - aside_text
+        - reference
+        - footer_image
+        - header_image

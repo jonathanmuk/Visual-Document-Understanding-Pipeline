@@ -1,22 +1,40 @@
+<!--
+  API-level policy for the Visual Document Understanding Pipeline API in Azure API Management.
+  Applies to every operation (POST /process and GET /status/{task_id}).
+
+  Before applying, replace:
+    {tenant-id}        your Microsoft Entra tenant ID
+    {api-client-id}    the application (client) ID of the app registration that
+                       represents this API; tokens must be issued for it
+
+  Access rules:
+    1. Every caller presents a subscription key (the API is created with
+       subscription required, so APIM refuses a missing or wrong key before
+       this policy runs).
+    2. A caller that also sends an Authorization header must send a valid
+       Entra ID token issued for this API. A token for any other app, even from
+       the same tenant, is refused.
+    3. Each subscription may make 100 calls a minute. A status poll counts as a
+       call, so size this for how often your clients poll, or use callbacks.
+-->
 <policies>
     <inbound>
         <base />
         <choose>
-            <!-- If no JWT is provided, ensure a valid Subscription Key is present -->
-            <when condition="@(!context.Request.Headers.ContainsKey("Authorization"))">
-                <!-- APIM automatically validates the Ocp-Apim-Subscription-Key header 
-                     if the Product requires a subscription. -->
-            </when>
-            <otherwise>
-                <!-- If Authorization header IS present, validate the JWT -->
-                <validate-jwt header-name="Authorization" failed-validation-httpcode="401">
-                    <openid-config url="https://login.microsoftonline.com/{tenant-id}/v2.0/.well-known/openid-configuration" />
+            <when condition="@(context.Request.Headers.ContainsKey("Authorization"))">
+                <validate-jwt header-name="Authorization" require-scheme="Bearer"
+                              failed-validation-httpcode="401"
+                              failed-validation-error-message="Unauthorized. Access token is missing or invalid.">
+                    <!-- validate-connectivity="false": APIM runs inside a virtual network here. -->
+                    <openid-config url="https://login.microsoftonline.com/{tenant-id}/v2.0/.well-known/openid-configuration" validate-connectivity="false" />
+                    <audiences>
+                        <audience>api://{api-client-id}</audience>
+                        <audience>{api-client-id}</audience>
+                    </audiences>
                 </validate-jwt>
-            </otherwise>
+            </when>
         </choose>
-        
-        <!-- Rate limiting based on the Subscription ID or Client IP -->
-        <rate-limit-by-key calls="100" renewal-period="60" counter-key="@(context.Subscription?.Id ?? context.Request.IpAddress)" />
+        <rate-limit-by-key calls="100" renewal-period="60" counter-key="@(context.Subscription.Id)" />
     </inbound>
     <backend>
         <base />

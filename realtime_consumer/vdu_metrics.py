@@ -40,19 +40,20 @@ except ImportError:  # pragma: no cover
 
 # Shared by worker and reaper. The reaper is always running, so it is the
 # reliable source for queue depths even when workers are scaled to zero.
-QUEUE_DEPTH = Gauge("vus_queue_depth", "Tasks on each queue", ["queue"])
+QUEUE_DEPTH = Gauge("vdu_queue_depth", "Tasks on each queue", ["queue"])
 
 # Worker.
-BATCH_SIZE = Histogram("vus_batch_size", "Documents per batch", buckets=(1, 2, 3, 4, 6, 8))
+BATCH_SIZE = Histogram("vdu_batch_size", "Documents per batch", buckets=(1, 2, 3, 4, 6, 8))
 STAGE_SECONDS = Histogram(
-    "vus_stage_seconds", "Time spent per stage", ["stage"],
+    "vdu_stage_seconds", "Time spent per stage", ["stage"],
     buckets=(0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60, 120, 300),
 )
-TASKS_TOTAL = Counter("vus_tasks_total", "Tasks by final outcome", ["outcome"])
-REGIONS_FAILED_TOTAL = Counter("vus_regions_failed_total", "Regions the model failed to transcribe")
+TASKS_TOTAL = Counter("vdu_tasks_total", "Tasks by final outcome", ["outcome"])
+REGIONS_FAILED_TOTAL = Counter("vdu_regions_failed_total", "Regions the model failed to transcribe")
 
 # Reaper.
-REAPER_ACTIONS_TOTAL = Counter("vus_reaper_actions_total", "Recovery actions", ["action"])
+REAPER_ACTIONS_TOTAL = Counter("vdu_reaper_actions_total", "Recovery actions", ["action"])
+WEBHOOKS_TOTAL = Counter("vdu_webhooks_total", "Callback deliveries by outcome", ["outcome"])
 
 
 def serve():

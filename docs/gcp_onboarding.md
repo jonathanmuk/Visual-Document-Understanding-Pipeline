@@ -8,19 +8,20 @@ GKE cluster.
 > This guide covers account creation only. It's all done in the browser. There
 > are no commands until the CLI install at the end.
 
+> For a beginner walkthrough of every console step below, see section 8 of
+> [`next-steps.md`](../next-steps.md).
+
 ---
 
 ## 1. Create your Google Cloud account (free trial)
 
 1. Go to **https://cloud.google.com/free**.
 2. Click **Get started for free**.
-   > _[PLACEHOLDER: screenshot of the "Get started for free" button ]_
 3. Sign in with a Google account (or create one).
 4. Fill in your country and accept the terms.
 5. Add a **credit or debit card** for verification.
    > **This does not charge you** during the trial. Google uses it to confirm
    > identity. You won't be billed unless you manually upgrade to a paid account.
-   > _[PLACEHOLDER: screenshot of the payment/verification step ]_
 6. Finish. You now have **$300 in credit valid for 90 days**.
 
 > **What you get:** $300 credit for 90 days, plus some always-free services.
@@ -47,7 +48,7 @@ the same GPUs as Azure, for architectural parity. L4 (G2) is a viable upgrade if
 you want to deviate. Details in `gcp_gpu_prereqs.md`.
 
 **Create a project.** Unlike Azure, GCP organizes everything under **projects**.
-Create one (e.g. `visual-understanding-system`) right after signup and use it throughout.
+Create one (e.g. `visual-document-understanding`) right after signup and use it throughout.
 
 ---
 
@@ -55,8 +56,7 @@ Create one (e.g. `visual-understanding-system`) right after signup and use it th
 
 1. Go to **https://console.cloud.google.com**.
 2. Top bar → project dropdown → **New Project**.
-   > _[PLACEHOLDER: screenshot of the New Project dropdown ]_
-3. Name it (e.g. `visual-understanding-system`) and create it.
+3. Name it (e.g. `vdu-pipeline`) and create it.
 4. Make sure it's selected in the top bar before doing anything else.
 
 ---
@@ -96,4 +96,3 @@ Your account and project exist and the CLI works. Now head to
 **`gcp_gpu_prereqs.md`** to link billing, activate the full account, request GPU
 quota, and verify availability by zone. Then move on to **`gke_deployment.md`**
 to build the GKE cluster.
-</content>

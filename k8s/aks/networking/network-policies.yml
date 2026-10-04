@@ -1,0 +1,153 @@
+# Who may talk to whom inside the cluster.
+#
+# NetworkPolicies are only enforced when the cluster has a network policy engine.
+# The deployment guide creates the cluster with one (Azure CNI powered by Cilium
+# on AKS, Dataplane V2 on GKE). Without one, these objects are accepted and do
+# nothing.
+#
+# Probes from the kubelet are always allowed: Kubernetes never blocks traffic
+# from the node a pod runs on.
+
+# 1. Nothing may connect to any pod in this namespace unless a rule below allows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+spec:
+  podSelector: {}
+  policyTypes: ["Ingress"]
+---
+# 2. Redis: only the API, the worker, the reaper, and KEDA (which reads the queue
+# length to decide how many workers to run). Nothing else can reach it, with or
+# without the password.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-allow-pipeline
+spec:
+  podSelector:
+    matchLabels:
+      app: ocr-redis
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app
+                operator: In
+                values: ["ocr-api", "ocr-worker-rt", "ocr-reaper"]
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keda
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+# 3. vLLM: only the worker sends it work; Prometheus reads its metrics.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vlm-allow-worker-and-monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app: ocr-vlm
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: ocr-worker-rt
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# 4. The worker and the reaper serve only metrics, and only Prometheus reads them.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: metrics-allow-monitoring
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["ocr-worker-rt", "ocr-reaper"]
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9100
+---
+# 5. The API and the MCP server are the front doors. Traffic reaches them through
+# the internal load balancer, whose source addresses a pod-level rule cannot
+# pin down reliably, so they accept connections on their serving port only.
+# Narrow the callers on the Service instead, with loadBalancerSourceRanges set to
+# your API gateway's subnet (see the deployment guide).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: front-doors-allow-serving-port
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["ocr-api", "ocr-mcp"]
+  policyTypes: ["Ingress"]
+  ingress:
+    - ports:
+        - protocol: TCP
+          port: 5000
+        - protocol: TCP
+          port: 8080
+---
+# 6. The MCP server fetches documents from URLs that a language model supplies.
+# It may reach the API, DNS, and the public internet, but no private address:
+# not Redis, not vLLM, not the cloud metadata endpoint. This backs up the
+# server's own URL checks at the network level.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: mcp-egress-public-only
+spec:
+  podSelector:
+    matchLabels:
+      app: ocr-mcp
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: ocr-api
+      ports:
+        - protocol: TCP
+          port: 5000
+    # DNS to any address: clusters that use NodeLocal DNSCache or Cloud DNS
+    # answer from a link-local address rather than the kube-dns pods.
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80

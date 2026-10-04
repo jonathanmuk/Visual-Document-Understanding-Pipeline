@@ -8,10 +8,10 @@ metadata:
   labels:
     grafana_dashboard: "1"
 data:
-  vus-overview.json: |
+  vdu-overview.json: |
     {
-      "title": "Visual Understanding System",
-      "uid": "vus-overview",
+      "title": "Visual Document Understanding Pipeline",
+      "uid": "vdu-overview",
       "schemaVersion": 39,
       "version": 1,
       "editable": true,
@@ -21,7 +21,7 @@ data:
         "to": "now"
       },
       "tags": [
-        "vus"
+        "vdu"
       ],
       "panels": [
         {
@@ -40,17 +40,17 @@ data:
           },
           "targets": [
             {
-              "expr": "vus_queue_depth{queue=\"waiting\"}",
+              "expr": "vdu_queue_depth{queue=\"waiting\"}",
               "legendFormat": "waiting",
               "refId": "A"
             },
             {
-              "expr": "vus_queue_depth{queue=\"processing\"}",
+              "expr": "vdu_queue_depth{queue=\"processing\"}",
               "legendFormat": "in progress",
               "refId": "B"
             },
             {
-              "expr": "vus_queue_depth{queue=\"dead\"}",
+              "expr": "vdu_queue_depth{queue=\"dead\"}",
               "legendFormat": "dead letter",
               "refId": "C"
             }
@@ -77,7 +77,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum by (outcome) (rate(vus_tasks_total[5m])) * 60",
+              "expr": "sum by (outcome) (rate(vdu_tasks_total[5m])) * 60",
               "legendFormat": "{{outcome}}",
               "refId": "A"
             }
@@ -165,12 +165,12 @@ data:
           },
           "targets": [
             {
-              "expr": "histogram_quantile(0.5, sum by (le, stage) (rate(vus_stage_seconds_bucket[5m])))",
+              "expr": "histogram_quantile(0.5, sum by (le, stage) (rate(vdu_stage_seconds_bucket[5m])))",
               "legendFormat": "p50 {{stage}}",
               "refId": "A"
             },
             {
-              "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(vus_stage_seconds_bucket[5m])))",
+              "expr": "histogram_quantile(0.95, sum by (le, stage) (rate(vdu_stage_seconds_bucket[5m])))",
               "legendFormat": "p95 {{stage}}",
               "refId": "B"
             }
@@ -231,7 +231,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum by (status) (rate(vus_http_requests_total[5m]))",
+              "expr": "sum by (status) (rate(vdu_http_requests_total[5m]))",
               "legendFormat": "{{status}}",
               "refId": "A"
             }
@@ -258,7 +258,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum by (reason) (rate(vus_uploads_rejected_total[5m])) * 60",
+              "expr": "sum by (reason) (rate(vdu_uploads_rejected_total[5m])) * 60",
               "legendFormat": "{{reason}}",
               "refId": "A"
             }
@@ -285,7 +285,7 @@ data:
           },
           "targets": [
             {
-              "expr": "increase(vus_regions_failed_total[5m])",
+              "expr": "increase(vdu_regions_failed_total[5m])",
               "legendFormat": "failed regions",
               "refId": "A"
             }
@@ -312,7 +312,7 @@ data:
           },
           "targets": [
             {
-              "expr": "sum by (action) (increase(vus_reaper_actions_total[5m]))",
+              "expr": "sum by (action) (increase(vdu_reaper_actions_total[5m]))",
               "legendFormat": "{{action}}",
               "refId": "A"
             }
