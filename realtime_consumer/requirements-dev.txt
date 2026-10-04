@@ -1,6 +1,6 @@
 pytest>=8.0
 fakeredis>=2.20
-redis>=5.0
+redis>=8.1.0
 loguru>=0.7
 prometheus_client>=0.20
 pypdfium2>=5.6
