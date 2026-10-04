@@ -22,7 +22,7 @@ jobs:
       run:
         working-directory: realtime_producer
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -39,7 +39,7 @@ jobs:
       run:
         working-directory: realtime_consumer
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -59,7 +59,7 @@ jobs:
       run:
         working-directory: mcp_server
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -75,7 +75,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [rust-api, mcp-server]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -95,7 +95,7 @@ jobs:
     name: Worker image builds
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The worker image is large (CUDA base). Building it proves the Dockerfile
       # and its pinned dependencies still resolve; it is not run here.
       - run: docker build -t ocr-worker-rt:ci ./realtime_consumer
@@ -107,7 +107,7 @@ jobs:
     name: Kubernetes manifests build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: azure/setup-kubectl@v4
       - run: kubectl kustomize k8s/aks/ > /dev/null
       - run: kubectl kustomize k8s/gke/ > /dev/null
@@ -138,7 +138,7 @@ jobs:
     name: Known vulnerabilities in dependencies
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - name: Rust (RustSec advisory database)
         working-directory: realtime_producer
