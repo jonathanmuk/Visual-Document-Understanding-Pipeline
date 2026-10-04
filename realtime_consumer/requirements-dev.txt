@@ -1,5 +1,5 @@
 pytest>=8.0
-fakeredis>=2.20
+fakeredis>=2.38.0
 redis>=5.0
 loguru>=0.7
 prometheus_client>=0.20
