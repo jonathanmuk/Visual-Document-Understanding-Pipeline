@@ -108,7 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: azure/setup-kubectl@v4
+      - uses: azure/setup-kubectl@v5
       - run: kubectl kustomize k8s/aks/ > /dev/null
       - run: kubectl kustomize k8s/gke/ > /dev/null
       - name: Both clouds render the same objects
