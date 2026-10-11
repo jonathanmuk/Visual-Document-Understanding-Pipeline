@@ -1,4 +1,4 @@
-FROM vllm/vllm-openai:v0.21.0
+FROM vllm/vllm-openai:v0.31.0
 
 WORKDIR /app
 
