@@ -1,6 +1,6 @@
 # The reaper needs only Redis. It must not carry the CUDA base image of the
 # worker, because it runs on the cheap CPU pool.
-FROM python:3.12-slim
+FROM python:3.14-slim
 WORKDIR /app
 RUN pip install --no-cache-dir redis loguru prometheus_client
 COPY vdu_queue.py vdu_metrics.py vdu_webhook.py reaper.py /app/
