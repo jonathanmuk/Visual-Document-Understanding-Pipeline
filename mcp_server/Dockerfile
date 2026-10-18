@@ -1,5 +1,5 @@
 # The MCP server: a thin front door for AI assistants. CPU only, no SDK, no GPU.
-FROM python:3.12-slim
+FROM python:3.14-slim
 WORKDIR /app
 COPY pyproject.toml requirements.txt ./
 COPY vdu_mcp ./vdu_mcp
